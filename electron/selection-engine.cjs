@@ -1,0 +1,1210 @@
+﻿/**
+ * SelectionEngine — 统一取词入口
+ *
+ * 设计原则：
+ * 1. 所有业务层取词必须经过 SelectionEngine.getPickedInfo()
+ * 2. 禁止业务层直接调用 ClipboardProvider / simulateCopy()
+ * 3. Provider 按优先级链式尝试
+ * 4. Clipboard 只能作为最后兜底
+ * 5. 词块选择卡片只作为 ManualFallback
+ *
+ * 豆包黑盒分析结论（参考）：
+ *   L1: Browser content script (neotix.textPicker.getPickedInfo)
+ *   L2: Windows UI Automation (TextPattern::GetSelection)
+ *   L3: OCR engine (内嵌 256MB Doubao.dll)
+ *   L4: Clipboard fallback (最后兜底)
+ */
+
+const { clipboard } = require('electron');
+const { execFile } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+
+// ─── Types ────────────────────────────────────────────
+
+/**
+ * @typedef {Object} PickedInfo
+ * @property {string} text — 规范化的选中文本
+ * @property {string} [fullText] — 源端返回的完整文本（用于 clipboard fallback 对比）
+ * @property {'browser'|'windows-uia'|'ocr'|'clipboard'|'manual'} source — 取词来源
+ * @property {number} confidence — 置信度 0-1
+ * @property {{x:number,y:number,width:number,height:number}} [rect] — 选区坐标
+ * @property {string} [appName] — 源应用名
+ * @property {string} [windowTitle] — 源窗口标题
+ * @property {string} [url] — 浏览器 URL
+ * @property {number} [latency] — 取词耗时 ms
+ * @property {Object<string,*>} [metadata] — 附加信息
+ */
+
+/**
+ * @typedef {Object} SelectionContext
+ * @property {{x:number,y:number}} [cursorStart] — 划选起点（逻辑坐标）
+ * @property {{x:number,y:number}} [cursorEnd] — 划选终点（逻辑坐标）
+ * @property {number} [dragDistance] — 划选距离 px
+ * @property {number} [dragDuration] — 划选时长 ms
+ * @property {string} [foregroundWindowTitle] — 前台窗口标题
+ * @property {string} [foregroundProcessName] — 前台进程名
+ * @property {boolean} [isBrowser] — 是否浏览器环境
+ * @property {string} [url] — 浏览器当前 URL
+ * @property {Object<string,*>} [extra] — 扩展上下文
+ */
+
+// ─── SelectionProvider 接口 ──────────────────────────
+
+class SelectionProvider {
+  /**
+   * 提供商标识（用于日志和调试）
+   * @returns {string}
+   */
+  get name() {
+    throw new Error('SelectionProvider.name must be implemented');
+  }
+
+  /**
+   * 优先级（数字越小优先级越高）
+   *  10 = browser (web 内容脚本直接取 selection)
+   *  30 = windows-uia (桌面应用无障碍)
+   *  50 = ocr (图片/视频)
+   *  90 = clipboard (Ctrl+C 兜底)
+   *  99 = manual (手动输入/词块选择)
+   * @returns {number}
+   */
+  get priority() {
+    throw new Error('SelectionProvider.priority must be implemented');
+  }
+
+  /**
+   * 判断当前上下文是否可使用此 Provider
+   * @param {SelectionContext} context
+   * @returns {boolean}
+   */
+  canHandle(context) {
+    return true; // 默认总是可以尝试
+  }
+
+  /**
+   * 执行取词
+   * @param {SelectionContext} context
+   * @returns {Promise<PickedInfo|null>}
+   */
+  async pick(context) {
+    throw new Error('SelectionProvider.pick must be implemented');
+  }
+}
+
+// ─── BrowserProvider ──────────────────────────────────
+
+/**
+ * BrowserProvider — 从浏览器插件获取精准选区
+ *
+ * priority 最高（10），因为 content script 的 getSelection()
+ * 和 token-hit-test 能拿到最精准的用户选区。
+ *
+ * 数据流：
+ *   浏览器插件 content.js → POST http://127.0.0.1:17321/selection
+ *   → main.cjs HTTP server 缓存 payload
+ *   → BrowserProvider.pick() 读取缓存
+ */
+class BrowserProvider extends SelectionProvider {
+  get name() { return 'browser'; }
+  get priority() { return 10; }
+
+  constructor(getPayloadFn) {
+    super();
+    this._getPayload = getPayloadFn || (() => null);
+  }
+
+  /**
+   * Always returns true — the actual payload check happens in pick()
+   * with a 200ms poll-wait. This is critical because the browser extension's
+   * POST may not have arrived yet when canHandle is first called.
+   */
+  canHandle(context) {
+    // Non-browser apps: skip BrowserProvider to save ~200ms polling wait.
+    // The browser extension's HTTP POST never arrives for Obsidian/Notepad/Codex.
+    const pn = String(context?.foregroundProcessName || '').toLowerCase();
+    if (pn && !/(chrome|msedge|firefox|brave|opera|browser)/.test(pn)) {
+      return false;
+    }
+    return true;
+  }
+
+  async pick(context) {
+    const start = Date.now();
+
+    // ⚡ Timing fix: wait up to 200ms for browser payload to arrive.
+    // The browser extension sends a POST, but the mouse hook may trigger
+    // SelectionEngine before the HTTP request lands. Poll-wait here.
+    let p = this._getPayload();
+    if (!p || !p.text) {
+      await sleep(50);
+      p = this._getPayload();
+    }
+    if (!p || !p.text) {
+      await sleep(80);
+      p = this._getPayload();
+    }
+    if (!p || !p.text) {
+      await sleep(70);
+      p = this._getPayload();
+    }
+    if (!p) return null;
+
+    const metadata = {
+      site: p.metadata?.site || '',
+      method: p.metadata?.method || '',
+      adapter: p.metadata?.adapter || '',
+      tokens: p.metadata?.tokens || [],
+      selectedTokens: p.metadata?.selectedTokens || [],
+      subtitleOverlayDetected: Boolean(p.metadata?.subtitleOverlayDetected),
+      needsManualSelection: Boolean(p.metadata?.needsManualSelection),
+      error: p.metadata?.error || p.error || '',
+    };
+
+    // Keep low-confidence browser markers. Third-party subtitle overlays can be
+    // visible to hit-testing but unreadable because of extension isolation.
+    // Dropping this marker lets ClipboardProvider win with a copied full line.
+    if (!p.text && (metadata.subtitleOverlayDetected || metadata.error)) {
+      return {
+        text: '',
+        fullText: p.fullText || '',
+        source: 'browser',
+        confidence: typeof p.confidence === 'number' ? p.confidence : 0.2,
+        rect: p.rect || undefined,
+        appName: 'chrome.exe',
+        windowTitle: p.title || '',
+        url: p.url || '',
+        latency: Date.now() - start,
+        error: metadata.error,
+        metadata,
+      };
+    }
+
+    if (!p.text) return null;
+
+    return {
+      text: p.text,
+      fullText: p.fullText || p.text,
+      source: 'browser',
+      confidence: p.confidence || 0.85,
+      rect: p.rect || undefined,
+      appName: 'chrome.exe',
+      windowTitle: p.title || '',
+      url: p.url || '',
+      latency: Date.now() - start,
+      metadata,
+    };
+  }
+}
+
+// ─── WindowsUIAProvider ───────────────────────────────
+
+/**
+ * WindowsUIAProvider — 通过 UIA TextPattern 获取选中文字
+ *
+ * 调用外部 Python 脚本 (uia_selection_poc.py) 实现。
+ * 只在 Windows 平台启用。
+ *
+ * 超时：500ms — 如果 Python 脚本在 500ms 内未返回，自动 fallback。
+ */
+class WindowsUIAProvider extends SelectionProvider {
+  get name() { return 'windows-uia'; }
+  get priority() { return 30; }
+
+  constructor(scriptPath) {
+    super();
+    this._scriptPath = scriptPath || (() => {
+  const packagedPath = path.join(typeof process !== 'undefined' && process.resourcesPath ? process.resourcesPath : '', 'tools', 'uia-selection-provider.ps1');
+  try { if (require('fs').existsSync(packagedPath)) return packagedPath; } catch (_) {}
+  return path.join(__dirname, '..', 'tools', 'uia-selection-provider.ps1');
+})();
+    this._enabled = process.platform === 'win32';
+  }
+
+  canHandle(context) {
+    if (!this._enabled) return false;
+    const pn = String(context?.foregroundProcessName || "").toLowerCase();
+    if (pn.includes("obsidian") || pn.includes("codex")) return false;
+    return true;
+  }
+
+  async pick(context) {
+    const startTime = Date.now();
+    const timeout = 650;
+
+    try {
+      const start = context.rawCursorStart || context.cursorStart || {};
+      const end = context.rawCursorEnd || context.cursorEnd || {};
+      if (!Number.isFinite(Number(start.x)) || !Number.isFinite(Number(start.y)) ||
+          !Number.isFinite(Number(end.x)) || !Number.isFinite(Number(end.y))) {
+        return null;
+      }
+
+      const args = [
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', this._scriptPath,
+        '-StartX', String(start.x),
+        '-StartY', String(start.y),
+        '-EndX', String(end.x),
+        '-EndY', String(end.y),
+        '-ForegroundProcess', String(context.foregroundProcessName || ''),
+        '-ForegroundTitle', String(context.foregroundWindowTitle || ''),
+      ];
+
+      const raw = await this._execPowerShell(args, timeout);
+      if (!raw) return null;
+
+      const parsed = this._parseOutput(raw);
+      if (!parsed || !parsed.text) return null;
+
+      return {
+        text: parsed.text,
+        fullText: parsed.text,
+        source: 'windows-uia',
+        confidence: parsed.confidence || 0.8,
+        rect: parsed.rect || undefined,
+        appName: parsed.appName || undefined,
+        windowTitle: parsed.windowTitle || undefined,
+        latency: Date.now() - startTime,
+        metadata: {
+          method: parsed.method || '',
+          uiaConfidence: parsed.confidence || 0,
+          fullTextPreview: (parsed.fullText || '').slice(0, 120),
+          error: parsed.error || '',
+        },
+      };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  _execPowerShell(args, timeoutMs) {
+    return new Promise((resolve) => {
+      const child = execFile(
+        'powershell.exe', args,
+        { windowsHide: true, timeout: timeoutMs, maxBuffer: 256 * 1024 },
+        (error, stdout, stderr) => {
+          if (error) {
+            if (stderr) console.warn('[WindowsUIAProvider] helper error:', String(stderr).slice(0, 300));
+            resolve(null);
+            return;
+          }
+          resolve(stdout || null);
+        }
+      );
+      const timer = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(null); }, timeoutMs + 100);
+      child.on('close', () => clearTimeout(timer));
+    });
+  }
+
+  _parseOutput(raw) {
+    try {
+      const data = JSON.parse(raw.trim());
+      if (!data || typeof data !== 'object') return null;
+      return {
+        text: (data.text || '').trim(),
+        fullText: (data.fullText || data.text || '').trim(),
+        confidence: typeof data.confidence === 'number' ? data.confidence : 0,
+        rect: data.rect || null,
+        appName: data.appName || '',
+        windowTitle: data.windowTitle || '',
+        method: data.method || data.strategy || '',
+        error: data.error || '',
+      };
+    } catch (_) { return null; }
+  }
+}
+
+// ─── ClipboardProvider ────────────────────────────────
+
+class OCRProvider extends SelectionProvider {
+  get name() { return 'ocr'; }
+  get priority() { return 50; }
+
+  constructor() {
+    super();
+    this._enabled = process.platform === 'win32';
+  }
+
+  canHandle(context) {
+    return this._enabled && context && context.cursorStart && context.cursorEnd;
+  }
+
+  async pick(context) {
+    const startTime = Date.now();
+    const rect = this._captureRect(context);
+    if (!rect || rect.width < 8 || rect.height < 8) return null;
+
+    try {
+      const raw = await this._runWindowsOcr(rect, 1600);
+      if (!raw) return null;
+      const parsed = this._parseOutput(raw);
+      if (!parsed || !parsed.text) return null;
+      const selectedText = this._selectWords(parsed.words, rect, context) || parsed.text;
+      return {
+        text: selectedText,
+        fullText: parsed.text,
+        source: 'ocr',
+        confidence: selectedText !== parsed.text ? Math.max(parsed.confidence || 0.78, 0.84) : (parsed.confidence || 0.78),
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        latency: Date.now() - startTime,
+        metadata: {
+          method: 'windows-media-ocr-screen-crop',
+          language: parsed.language || '',
+          ocrWordFiltered: selectedText !== parsed.text,
+        },
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _captureRect(context) {
+    const startPoint = context.rawCursorStart || context.cursorStart;
+    const endPoint = context.rawCursorEnd || context.cursorEnd;
+    const sx = Number(startPoint.x);
+    const sy = Number(startPoint.y);
+    const ex = Number(endPoint.x);
+    const ey = Number(endPoint.y);
+    if (![sx, sy, ex, ey].every(Number.isFinite)) return null;
+
+    const left = Math.min(sx, ex);
+    const right = Math.max(sx, ex);
+    const top = Math.min(sy, ey);
+    const bottom = Math.max(sy, ey);
+    const dragW = Math.max(1, right - left);
+    const dragH = Math.max(1, bottom - top);
+    const padX = Math.max(14, Math.min(50, dragW * 0.22));
+    const padY = Math.max(24, Math.min(56, dragH * 2.2));
+
+    return {
+      x: Math.max(0, Math.round(left - padX)),
+      y: Math.max(0, Math.round(top - padY)),
+      width: Math.max(28, Math.round(dragW + padX * 2)),
+      height: Math.max(34, Math.round(dragH + padY * 2)),
+    };
+  }
+
+  _runWindowsOcr(rect, timeoutMs) {
+    const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+[Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime] | Out-Null
+[Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime] | Out-Null
+[Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime] | Out-Null
+[Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime] | Out-Null
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 })[0]
+function Await($op, [Type]$type) {
+  $task = $asTaskGeneric.MakeGenericMethod($type).Invoke($null, @($op))
+  return $task.GetAwaiter().GetResult()
+}
+$x = ${rect.x}
+$y = ${rect.y}
+$w = ${rect.width}
+$h = ${rect.height}
+$path = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ('aisel-ocr-' + [Guid]::NewGuid().ToString('N') + '.png'))
+$bitmap = New-Object System.Drawing.Bitmap($w, $h)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+try {
+  $graphics.CopyFromScreen($x, $y, 0, 0, [System.Drawing.Size]::new($w, $h))
+  $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+  $graphics.Dispose()
+  $bitmap.Dispose()
+}
+try {
+  $file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($path)) ([Windows.Storage.StorageFile])
+  $stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+  $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+  $softwareBitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+  $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+  if ($null -eq $engine) { throw 'Windows OCR engine unavailable' }
+  $result = Await ($engine.RecognizeAsync($softwareBitmap)) ([Windows.Media.Ocr.OcrResult])
+  $text = (($result.Text -replace '\\s+', ' ').Trim())
+  $words = @()
+  foreach ($line in $result.Lines) {
+    foreach ($word in $line.Words) {
+      $words += [PSCustomObject]@{
+        text = $word.Text
+        x = [double]$word.BoundingRect.X
+        y = [double]$word.BoundingRect.Y
+        width = [double]$word.BoundingRect.Width
+        height = [double]$word.BoundingRect.Height
+      }
+    }
+  }
+  $confidence = 0.72
+  if ($text.Length -gt 0 -and $text.Length -le 60) { $confidence = 0.82 }
+  [PSCustomObject]@{
+    text = $text
+    words = $words
+    confidence = $confidence
+    language = $engine.RecognizerLanguage.LanguageTag
+  } | ConvertTo-Json -Compress
+} finally {
+  Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+}
+`;
+
+    return new Promise((resolve) => {
+      const child = execFile(
+        'powershell.exe',
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        { windowsHide: true, timeout: timeoutMs, maxBuffer: 512 * 1024 },
+        (error, stdout) => {
+          if (error) { resolve(null); return; }
+          resolve(stdout || null);
+        }
+      );
+      const timer = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(null); }, timeoutMs + 150);
+      child.on('close', () => clearTimeout(timer));
+    });
+  }
+
+  _parseOutput(raw) {
+    try {
+      const data = JSON.parse(String(raw || '').trim());
+      const text = String(data.text || '').replace(/\s+/g, ' ').trim();
+      if (!text) return null;
+      return {
+        text,
+        confidence: typeof data.confidence === 'number' ? data.confidence : 0.78,
+        language: data.language || '',
+        words: Array.isArray(data.words) ? data.words : [],
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _selectWords(words, cropRect, context = {}) {
+    if (!Array.isArray(words) || !words.length || !cropRect || !context) return '';
+    const startPoint = context.rawCursorStart || context.cursorStart;
+    const endPoint = context.rawCursorEnd || context.cursorEnd;
+    if (!startPoint || !endPoint) return '';
+    const sx = Number(startPoint.x);
+    const sy = Number(startPoint.y);
+    const ex = Number(endPoint.x);
+    const ey = Number(endPoint.y);
+    if (![sx, sy, ex, ey].every(Number.isFinite)) return '';
+
+    const drag = {
+      left: Math.min(sx, ex) - 3,
+      right: Math.max(sx, ex) + 3,
+      top: Math.min(sy, ey) - 10,
+      bottom: Math.max(sy, ey) + 10,
+    };
+
+    const ranked = words
+      .map((word, index) => {
+        const text = String(word.text || '').trim();
+        const rect = {
+          left: cropRect.x + Number(word.x || 0),
+          top: cropRect.y + Number(word.y || 0),
+          right: cropRect.x + Number(word.x || 0) + Number(word.width || 0),
+          bottom: cropRect.y + Number(word.y || 0) + Number(word.height || 0),
+          width: Number(word.width || 0),
+          height: Number(word.height || 0),
+        };
+        const overlapX = Math.max(0, Math.min(rect.right, drag.right) - Math.max(rect.left, drag.left));
+        const overlapY = Math.max(0, Math.min(rect.bottom, drag.bottom) - Math.max(rect.top, drag.top));
+        const overlapArea = overlapX * overlapY;
+        const overlapRatioX = overlapX / Math.max(1, rect.width);
+        const overlapRatioArea = overlapArea / Math.max(1, rect.width * rect.height);
+        const cx = (rect.left + rect.right) / 2;
+        const cy = (rect.top + rect.bottom) / 2;
+        const centerInside = cx >= drag.left && cx <= drag.right && cy >= drag.top && cy <= drag.bottom;
+        const selected = text && rect.width > 0 && rect.height > 0 && (centerInside || overlapRatioX >= 0.35 || overlapRatioArea >= 0.22);
+        return { index, text, rect, selected, overlapArea, overlapRatioX };
+      })
+      .filter((item) => item.text);
+
+    let selected = ranked.filter((item) => item.selected);
+    if (!selected.length) {
+      const best = [...ranked].sort((a, b) => b.overlapArea - a.overlapArea)[0];
+      if (best && best.overlapArea > 0) selected = [best];
+    }
+    if (!selected.length) return '';
+
+    selected.sort((a, b) => a.index - b.index);
+    return selected.map((item) => item.text).join(' ').replace(/\s+/g, ' ').trim();
+  }
+}
+
+class ClipboardProvider extends SelectionProvider {
+  get name() { return 'clipboard'; }
+  get priority() { return 90; }
+
+  canHandle(context) {
+    // clipboard provider 始终可用（作为最后兜底）
+    return true;
+  }
+
+  async pick(context) {
+    const startTime = Date.now();
+
+    // 1. 保存剪贴板原始内容
+    let previous = '';
+    try {
+      previous = clipboard.readText() || '';
+    } catch (_) { /* ignore */ }
+
+    // 2. 模拟 Ctrl+C
+    await simulateCtrlC();
+
+    // 3. 等待剪贴板更新
+    const dragDist = context?.dragDistance || 0;
+    const waitTime = dragDist < 50 ? 120 : dragDist < 200 ? 180 : dragDist < 500 ? 280 : 400;
+    await sleep(waitTime);
+
+    // 4. 读取剪贴板
+    let selected = '';
+    try {
+      selected = (clipboard.readText() || '').trim();
+    } catch (_) { /* ignore */ }
+
+    // 5. 恢复原始剪贴板
+    try {
+      clipboard.writeText(previous || '');
+    } catch (_) { /* ignore */ }
+
+    const latency = Date.now() - startTime;
+
+    // 6. 校验
+    if (!selected) {
+      return null;
+    }
+    const isSameText = selected === (previous || '').trim();
+    const confidence = isSameText
+      ? Math.min(calculateClipboardConfidence(selected, context), 0.45)
+      : calculateClipboardConfidence(selected, context);
+
+    return {
+      text: selected,
+      fullText: selected,
+      source: 'clipboard',
+      confidence,
+      latency,
+      metadata: {
+        method: 'clipboard-simulate-ctrl-c',
+        clipboardChanged: !isSameText,
+        previousTextPreview: String(previous || '').slice(0, 40),
+      },
+    };
+  }
+}
+
+// ─── ManualFallbackProvider ──────────────────────────
+
+class ManualFallbackProvider extends SelectionProvider {
+  get name() { return 'manual'; }
+  get priority() { return 99; }
+
+  canHandle(context) {
+    // manual fallback 始终可用（最低优先级）
+    return true;
+  }
+
+  async pick(context) {
+    // 此 Provider 不执行实际取词，而是返回一个信号
+    // 告诉上层需要触发词块选择卡片
+    return {
+      text: '',
+      source: 'manual',
+      confidence: 0,
+      metadata: { needsManualSelection: true },
+    };
+  }
+}
+
+// ─── 辅助函数 ─────────────────────────────────────────
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function simulateCtrlC() {
+  return new Promise((resolve) => {
+    const script =
+      'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^c")';
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { windowsHide: true },
+      () => resolve()
+    );
+  });
+}
+
+/**
+ * 计算 clipboard 取词的置信度
+ *
+ * 原理：clipboard 的局限是 Ctrl+C 可能拿到整句而非划选的几个词。
+ * 根据上下文特征降低置信度：
+ * - 文本很短（<20字符）→ 高置信度（大概率就是划选的）
+ * - 文本很长且是多行 → 低置信度（可能拿到整段）
+ * - 文本有换行 → 可能是整句复制
+ */
+function calculateClipboardConfidence(text, context) {
+  const len = (text || '').length;
+  const lines = (text || '').split(/\r?\n/).filter(Boolean).length;
+  const words = (text || '').trim().split(/\s+/).length;
+
+  if (context && context.subtitleOverlayDetected) {
+    if (words > 3 || len > 24) return 0.3;
+    return 0.4;
+  }
+
+  // 划选距离很小 + 文本很短 → 很可能是精准选区
+  if (len <= 20 && words <= 3) return 0.85;
+
+  // 划选距离较大但文本不长 → 合理
+  if (len <= 60 && words <= 8 && lines === 1) return 0.7;
+
+  // 单行中等长度
+  if (len <= 120 && lines === 1) return 0.55;
+
+  // 多行或长文本 → 大概率不是精确选区
+  if (lines > 1) return 0.5;
+  if (len > 120) return 0.45;
+
+  return 0.5;
+}
+
+// ─── 融合评分系统 ─────────────────────────────────────
+
+/**
+ * Provider 基础权重
+ */
+const SOURCE_WEIGHT = {
+  'browser': 90,
+  'windows-uia': 80,
+  'ocr': 70,
+  'clipboard': 45,
+  'manual': 20,
+};
+
+/**
+ * 场景 → 主 Provider 路由表
+ */
+const PROVIDER_STRATEGY = {
+  youtube:    { primary: 'browser',    boost: 20 },
+  webpage:    { primary: 'browser',    boost: 15 },
+  qq:         { primary: 'windows-uia', boost: 15 },
+  word:       { primary: 'windows-uia', boost: 15 },
+  pdf:        { primary: 'windows-uia', boost: 10 },
+  notepad:    { primary: 'windows-uia', boost: 10 },
+  image:      { primary: 'ocr',        boost: 25 },
+  game:       { primary: 'ocr',        boost: 25 },
+  video:      { primary: 'ocr',        boost: 25 },
+  unknown:    { primary: null,         boost: 0 },
+};
+
+function detectContext(candidates, context) {
+  // Heuristic: detect scenario from candidate app names and window titles
+  const titles = candidates.map(c => (c.windowTitle || '').toLowerCase()).join(' ');
+  const apps = candidates.map(c => (c.appName || '').toLowerCase()).join(' ');
+  const urls = candidates.map(c => (c.url || '').toLowerCase()).join(' ');
+
+  if (urls.includes('youtube.com') || titles.includes('youtube')) return 'youtube';
+  if (apps.includes('chrome') || apps.includes('msedge') || apps.includes('firefox')) return 'webpage';
+  if (apps.includes('qq') || titles.includes('qq') || titles.includes('腾讯')) return 'qq';
+  if (apps.includes('winword') || titles.includes('word') || titles.includes('docx')) return 'word';
+  if (apps.includes('acrobat') || titles.includes('pdf') || titles.includes('adobe')) return 'pdf';
+  if (apps.includes('notepad') || titles.includes('记事本')) return 'notepad';
+  if (apps.includes('photos') || titles.includes('图片') || titles.includes('照片')) return 'image';
+  if (apps.includes('game') || titles.includes('game')) return 'game';
+  if (apps.includes('player') || titles.includes('播放')) return 'video';
+  if (apps.includes('obsidian') || titles.includes('obsidian')) return 'obsidian';
+  if (apps.includes('electron') || titles.includes('electron')) return 'electron';
+  return 'unknown';
+}
+
+function scoreCandidate(c, context, allCandidates) {
+  let s = SOURCE_WEIGHT[c.source] || 30;
+  const subtitleOverlayDetected = hasSubtitleOverlayMarker(allCandidates);
+
+  // Text non-empty
+  if (c.text && c.text.trim()) s += 10;
+
+  // High confidence
+  if ((c.confidence || 0) >= 0.75) s += 20;
+
+  // Has rect
+  if (c.rect) s += 10;
+
+  // Substring of longer clipboard result → boost
+  const clip = allCandidates.find(r => r.source === 'clipboard' && r.text);
+  if (clip && c.source !== 'clipboard' && c.text && clip.text.includes(c.text) && c.text.length > 0) {
+    s += 20;
+  }
+
+  // Multiple providers agree on same text
+  const sameText = allCandidates.filter(r => r.text === c.text && r.text).length;
+  if (sameText >= 2) s += 20;
+
+  // Scenario boost
+  const scenario = detectContext(allCandidates, context);
+  const strategy = PROVIDER_STRATEGY[scenario] || PROVIDER_STRATEGY.unknown;
+  if (c.source === strategy.primary) s += strategy.boost;
+
+  // Penalties
+  if (!c.text || !c.text.trim()) s -= 100;
+  if (c.source === 'windows-uia' && c.metadata?.method === 'uia-name-estimated-word-hit-test') {
+    s -= 50;
+  }
+  // Low-confidence generic subtitle overlay: don't dominate scoring
+  if (c.source === 'browser' && c.metadata?.adapter === 'generic-subtitle-overlay' && (c.confidence || 0) < 0.5) {
+    s -= 100;
+  }
+  if (isLikelyGarbledText(c.text)) s -= 180;
+  if (c.text && c.text.length > 200) s -= 25;
+  if (c.source === 'clipboard' && c.text && c.text.length > 80) s -= 25;
+  if (c.source === 'clipboard' && allCandidates.some(
+    r => r.source !== 'clipboard' && r.text && c.text && c.text.includes(r.text)
+  )) s -= 40;
+  if ((c.latency || 0) > 1500) s -= 25;
+  else if ((c.latency || 0) > 800) s -= 10;
+  if ((c.confidence || 0) < 0.4) s -= 30;
+  if (c.source === 'clipboard' && subtitleOverlayDetected) {
+    s -= 90;
+    const words = String(c.text || '').trim().split(/\s+/).filter(Boolean).length;
+    if (words > 3 || String(c.text || '').length > 24) s -= 30;
+  }
+
+  return s;
+}
+
+function isLikelyGarbledText(text) {
+  const value = String(text || '');
+  if (!value) return false;
+  const replacementCount = (value.match(/\uFFFD/g) || []).length;
+  if (replacementCount >= 2) return true;
+  if (replacementCount === 1 && value.length <= 12) return true;
+  return false;
+}
+
+function isBrowserWebContext(context = {}, candidates = []) {
+  const processName = String(context.foregroundProcessName || '').toLowerCase();
+  const appNames = candidates.map((candidate) => String(candidate.appName || '').toLowerCase()).join(' ');
+  const urls = candidates.map((candidate) => String(candidate.url || '').toLowerCase()).join(' ');
+  return /(chrome|msedge|firefox|browser)/.test(`${processName} ${appNames}`) || /^https?:\/\//.test(urls) || urls.includes('x.com') || urls.includes('twitter.com');
+}
+
+function isUsefulClipboardSelection(candidate) {
+  const text = String(candidate?.text || '').trim();
+  if (!text || isLikelyGarbledText(text)) return false;
+  if ((candidate.confidence || 0) < 0.45) return false;
+  return text.length >= 12 || /\s/.test(text);
+}
+
+function isGenericSubtitleOverlayResult(candidate) {
+  return candidate?.source === 'browser' &&
+    candidate?.metadata?.adapter === 'generic-subtitle-overlay';
+}
+
+function hasSubtitleOverlayMarker(candidates) {
+  return candidates.some((r) => Boolean(
+    r &&
+    (r.metadata?.subtitleOverlayDetected ||
+      r.metadata?.error === 'third_party_extension_dom_not_accessible' ||
+      r.metadata?.error === 'subtitle_overlay_precise_selection_failed' ||
+      r.metadata?.error === 'subtitle_window_selection_full_line_blocked' ||
+      r.error === 'third_party_extension_dom_not_accessible' ||
+      r.error === 'subtitle_overlay_precise_selection_failed' ||
+      r.error === 'subtitle_window_selection_full_line_blocked')
+  ));
+}
+
+function isPrecisionFastPath(result, context = {}) {
+  if (!result || result.source !== 'browser') return false;
+  if (!result.text) return false;
+  if (result.metadata?.error) return false;
+  if ((result.confidence || 0) < 0.86) return false;
+
+  const adapter = result.metadata?.adapter || '';
+  const method = result.metadata?.method || '';
+  const precisionAdapters = ['youtube-native-caption', 'trancy-caption'];
+  const precisionMethods = ['youtube-native-token-hit-test', 'trancy-subtitle-token-hit-test', 'window-selection'];
+
+  const isPrecisionAdapter = precisionAdapters.includes(adapter);
+  const isPrecisionMethod = precisionMethods.includes(method);
+  if (!isPrecisionAdapter && !isPrecisionMethod) return false;
+
+  // Rect proximity check
+  if (result.rect && context.cursorStart && context.cursorEnd) {
+    const dragLeft = Math.min(context.cursorStart.x, context.cursorEnd.x);
+    const dragRight = Math.max(context.cursorStart.x, context.cursorEnd.x);
+    const dragTop = Math.min(context.cursorStart.y, context.cursorEnd.y);
+    const dragBottom = Math.max(context.cursorStart.y, context.cursorEnd.y);
+    const rectCx = result.rect.x + result.rect.width / 2;
+    const rectCy = result.rect.y + result.rect.height / 2;
+    const dragCx = (dragLeft + dragRight) / 2;
+    const dragCy = (dragTop + dragBottom) / 2;
+    const dist = Math.hypot(rectCx - dragCx, rectCy - dragCy);
+    const dragDiag = Math.hypot(dragRight - dragLeft, dragBottom - dragTop);
+    if (dist > Math.max(200, dragDiag * 1.5)) return false;
+  }
+  return true;
+}
+
+function createManualDecision(all, scores, reason, extraMetadata = {}) {
+  return {
+    text: '',
+    source: 'manual',
+    confidence: 0,
+    candidates: all,
+    reason,
+    scoreBreakdown: scores || {},
+    fallbackUsed: true,
+    needsManualSelection: true,
+    metadata: { needsManualSelection: true, ...extraMetadata },
+  };
+}
+
+function cloneWithClipboardDowngrade(candidate, confidence) {
+  return {
+    ...candidate,
+    confidence: Math.min(candidate.confidence || 0, confidence),
+    metadata: {
+      ...(candidate.metadata || {}),
+      downgradedBecause: 'subtitle_overlay_detected',
+    },
+  };
+}
+
+function shouldTryOcrProvider(results, context = {}) {
+  if (context.forceOcr || context.preferOcr) return true;
+  if (hasSubtitleOverlayMarker(results.filter(Boolean))) return true;
+  const processName = String(context.foregroundProcessName || '').toLowerCase();
+  const title = String(context.foregroundWindowTitle || '').toLowerCase();
+  if (/(player|game|photo|image|video|chrome|msedge|firefox)/.test(processName) && /(youtube|bilibili|netflix|trancy|tracy|字幕|视频|播放器|哔哩|b站)/.test(title)) {
+    return true;
+  }
+  if (/(player|game|photo|image|video)/.test(processName) || /(youtube|bilibili|netflix|视频|播放器|图片|照片)/.test(title)) {
+    return true;
+  }
+  return false;
+}
+
+function shouldAvoidClipboardProvider(results, context = {}) {
+  if (hasSubtitleOverlayMarker(results.filter(Boolean))) return true;
+  const processName = String(context.foregroundProcessName || '').toLowerCase();
+  const title = String(context.foregroundWindowTitle || '').toLowerCase();
+  if (/(chrome|msedge|firefox)/.test(processName) && /(youtube|bilibili|netflix|trancy|tracy|字幕|视频|播放器|哔哩|b站)/.test(title)) {
+    return true;
+  }
+  return false;
+}
+
+function chooseBestPickedInfo(results, context = {}) {
+  const valid = results.filter(r => r && r.text);
+  const all = results.filter(Boolean);
+  const subtitleOverlayDetected = hasSubtitleOverlayMarker(all);
+  const decisionContext = { ...context, subtitleOverlayDetected };
+
+  if (valid.length === 0) {
+    return createManualDecision(all, {}, subtitleOverlayDetected
+      ? 'subtitle_overlay_detected_no_precise_text'
+      : 'no_valid_text', {
+        subtitleOverlayDetected,
+        error: all.find((r) => r.metadata?.error || r.error)?.metadata?.error || all.find((r) => r.error)?.error || '',
+      });
+  }
+
+  if (subtitleOverlayDetected) {
+    for (let i = 0; i < all.length; i += 1) {
+      const r = all[i];
+      if (r && r.source === 'clipboard') {
+        const words = String(r.text || '').trim().split(/\s+/).filter(Boolean).length;
+        all[i] = cloneWithClipboardDowngrade(r, words > 3 || String(r.text || '').length > 24 ? 0.3 : 0.4);
+      }
+    }
+  }
+
+  const scores = {};
+  for (const c of all) {
+    scores[c.source] = scoreCandidate(c, decisionContext, all);
+  }
+
+  if (subtitleOverlayDetected) {
+    const hasHighConfNonClipboard = valid.some((r) =>
+      r.source !== 'clipboard' &&
+      r.text &&
+      (r.confidence || 0) >= 0.5
+    );
+    if (!hasHighConfNonClipboard) {
+      // Block clipboard only when non-clipboard results are explicitly empty (block marker)
+      const allNonClipboardEmpty = all
+        .filter((r) => r.source !== 'clipboard')
+        .every((r) => !r.text);
+      if (allNonClipboardEmpty) {
+        return createManualDecision(all, scores, 'subtitle_overlay_clipboard_blocked', {
+          subtitleOverlayDetected: true,
+          error: all.find((r) => r.metadata?.error || r.error)?.metadata?.error || all.find((r) => r.error)?.error || '',
+        });
+      }
+      // Not blocking: clear subtitle overlay marker so scoring treats this normally
+      for (const r of all) {
+        if (r.metadata) r.metadata.subtitleOverlayDetected = false;
+      }
+    }
+  }
+
+  const sorted = [...all].sort((a, b) => (scores[b.source] || 0) - (scores[a.source] || 0));
+  const best = sorted[0];
+  const reasonParts = [];
+
+  if (best && isLikelyGarbledText(best.text)) {
+    return createManualDecision(all, scores, 'garbled_text_blocked', {
+      subtitleOverlayDetected,
+      needsManualSelection: true,
+      error: 'garbled_text_blocked',
+    });
+  }
+
+  const clipResult = valid.find(r => r.source === 'clipboard');
+  const genericBrowser = valid.find((r) => isGenericSubtitleOverlayResult(r) && (r.confidence || 0) >= 0.7);
+  if (
+    clipResult &&
+    genericBrowser &&
+    isBrowserWebContext(context, all) &&
+    isUsefulClipboardSelection(clipResult) &&
+    genericBrowser.text &&
+    !String(clipResult.text).includes(String(genericBrowser.text)) &&
+    !String(genericBrowser.text).includes(String(clipResult.text))
+  ) {
+    reasonParts.push('web_clipboard_over_generic_subtitle_overlay');
+    return buildDecision(clipResult, all, scores, reasonParts.join(';'));
+  }
+
+  if (
+    clipResult &&
+    isBrowserWebContext(context, all) &&
+    isUsefulClipboardSelection(clipResult) &&
+    best &&
+    (best.source === 'windows-uia' || best.source === 'ocr') &&
+    best.text &&
+    !String(clipResult.text).includes(String(best.text)) &&
+    !String(best.text).includes(String(clipResult.text))
+  ) {
+    reasonParts.push('web_clipboard_over_inconsistent_uia_ocr');
+    return buildDecision(clipResult, all, scores, reasonParts.join(';'));
+  }
+
+  // Rule 1: Browser high-confidence → lock
+  const browser = valid.find(r => r.source === 'browser' && (r.confidence || 0) >= 0.7);
+  if (browser && best.source !== 'browser') {
+    reasonParts.push('browser_override_others');
+    return buildDecision(browser, all, scores, reasonParts.join(';'));
+  }
+
+  // Rule 2: UIA high-confidence → lock against clipboard
+  const uia = valid.find(r => r.source === 'windows-uia' && (r.confidence || 0) >= 0.7);
+  if (uia && best.source === 'clipboard') {
+    reasonParts.push('uia_override_clipboard');
+    return buildDecision(uia, all, scores, reasonParts.join(';'));
+  }
+
+  // Rule 3: OCR high-confidence when Browser/UIA both failed
+  const browserOrUiaOk = valid.some(r =>
+    (r.source === 'browser' || r.source === 'windows-uia') && (r.confidence || 0) >= 0.5
+  );
+  const ocr = valid.find(r => r.source === 'ocr' && (r.confidence || 0) >= 0.7);
+  if (ocr && !browserOrUiaOk && best.source === 'clipboard') {
+    reasonParts.push('ocr_override_clipboard_no_browser_uia');
+    return buildDecision(ocr, all, scores, reasonParts.join(';'));
+  }
+
+  // Rule 4-6: Clipboard superset → prefer non-clipboard subtext
+  if (clipResult && best.source === 'clipboard') {
+    for (const r of sorted) {
+      if (r.source !== 'clipboard' && r.text && clipResult.text.includes(r.text)) {
+        reasonParts.push(`${r.source}_substring_of_clipboard`);
+        return buildDecision(r, all, scores, reasonParts.join(';'));
+      }
+    }
+  }
+
+  // Rule 7: All low confidence → manual
+  const anyGood = valid.some(r => (r.confidence || 0) >= 0.4);
+  if (!anyGood) {
+    reasonParts.push('all_low_confidence');
+    const decision = buildDecision(best, all, scores, reasonParts.join(';'));
+    decision.metadata = { ...decision.metadata, needsManualSelection: true };
+    decision.needsManualSelection = true;
+    return decision;
+  }
+
+  reasonParts.push(`best_score:${best.source}`);
+  return buildDecision(best, all, scores, reasonParts.join(';'));
+}
+
+function buildDecision(picked, all, scores, reason) {
+  return {
+    ...picked,
+    candidates: all,
+    reason,
+    scoreBreakdown: scores,
+    fallbackUsed: all.length > 1 && picked.source !== all[0].source,
+    needsManualSelection: false,
+  };
+}
+
+// ─── SelectionEngine ─────────────────────────────────
+
+class SelectionEngine {
+  constructor() {
+    /** @type {SelectionProvider[]} */
+    this.providers = [];
+  }
+
+  /**
+   * 注册 Provider（按 priority 排序）
+   * @param {SelectionProvider} provider
+   */
+  register(provider) {
+    this.providers.push(provider);
+    this.providers.sort((a, b) => a.priority - b.priority);
+  }
+
+  /**
+   * 唯一取词入口
+   *
+   * 调用方式：
+   *   const pickedInfo = await selectionEngine.getPickedInfo(context);
+   *   // pickedInfo.text — 可信的选中文本
+   *   // pickedInfo.source — 取词来源
+   *   // pickedInfo.confidence — 置信度
+   *
+   * 规则：
+   *   - 所有 Provider 依次尝试
+   *   - 用 chooseBestPickedInfo() 选最优结果
+   *   - 低置信度时附带 metadata.needsManualSelection
+   *
+   * @param {SelectionContext} context
+   * @returns {Promise<PickedInfo>}
+   */
+  async getPickedInfo(context = {}) {
+    const overallStart = Date.now();
+    const results = [];
+
+    for (const provider of this.providers) {
+      if (!provider.canHandle(context)) continue;
+      if (provider.name === 'ocr' && !shouldTryOcrProvider(results, context)) continue;
+      if (provider.name === 'clipboard' && shouldAvoidClipboardProvider(results, context)) continue;
+
+      try {
+        const result = await provider.pick(context);
+        if (result) {
+          results.push(result);
+
+          // Browser 高置信度 → 直接返回，不被后续覆盖
+          if (isPrecisionFastPath(result, context)) {
+            console.log('[SelectionEngine] precision fast path:', JSON.stringify({
+              adapter: result.metadata?.adapter,
+              method: result.metadata?.method,
+              text: (result.text || '').slice(0, 40),
+              confidence: result.confidence,
+            }));
+            break;
+          }
+
+          // UIA 高置信度 → 直接返回，但 browser 优先
+          if (result.text && provider.name === 'windows-uia' && (result.confidence || 0) >= 0.75 &&
+              !results.some(r => r.source === 'browser')) {
+            break;
+          }
+        }
+      } catch (err) {
+        console.error(`[SelectionEngine] ${provider.name} error:`, err.message);
+      }
+    }
+
+    const best = chooseBestPickedInfo(results, context);
+    best.latency = Date.now() - overallStart;
+
+    // selection:decision log
+    const decisionCandidates = Array.isArray(best.candidates) ? best.candidates : results;
+    const logEntry = {
+      event: 'selection:decision',
+      candidates: decisionCandidates.map((r) => ({
+        source: r.source,
+        textPreview: (r.text || '').slice(0, 40),
+        textLength: r.text ? r.text.length : 0,
+        confidence: r.confidence,
+        score: (best.scoreBreakdown || {})[r.source] || 0,
+        latency: r.latency,
+        hasRect: !!r.rect,
+        method: r.metadata?.method || '',
+        adapter: r.metadata?.adapter || '',
+        subtitleOverlayDetected: Boolean(r.metadata?.subtitleOverlayDetected),
+        error: r.metadata?.error || r.error || '',
+      })),
+      pickedSource: best.source,
+      pickedTextPreview: (best.text || '').slice(0, 40),
+      pickedConfidence: best.confidence || 0,
+      pickedScore: (best.scoreBreakdown || {})[best.source] || 0,
+      reason: best.reason || '',
+      needsManualSelection: !!(best.needsManualSelection || (best.metadata && best.metadata.needsManualSelection)),
+      totalLatency: best.latency,
+    };
+    console.log('[selection:decision]', JSON.stringify(logEntry));
+
+    if (best.needsManualSelection || (best.metadata && best.metadata.needsManualSelection)) {
+      best.metadata = { ...best.metadata, lowConfidenceWarning: true };
+    }
+
+    return best;
+  }
+
+  /**
+   * 获取所有已注册 Provider 的名称列表（用于调试）
+   * @returns {string[]}
+   */
+  listProviders() {
+    return this.providers.map((p) => p.name);
+  }
+}
+
+// ─── Factory ─────────────────────────────────────────
+
+/**
+ * 创建默认配置好的 SelectionEngine
+ */
+function createDefaultEngine(getBrowserPayload) {
+  const engine = new SelectionEngine();
+
+  // L1: Browser content script (10) — highest priority
+  // getBrowserPayload: () => cached payload from HTTP receiver
+  if (getBrowserPayload) {
+    engine.register(new BrowserProvider(getBrowserPayload));
+  }
+
+  // L2: Windows UI Automation (30) — native desktop text selection
+  engine.register(new WindowsUIAProvider());
+
+  // L4: Clipboard fallback (90) — Ctrl+C, last resort
+  engine.register(new OCRProvider());
+  engine.register(new ClipboardProvider());
+
+  // L5: Manual fallback (99) — word block selection card
+  engine.register(new ManualFallbackProvider());
+
+  return engine;
+}
+
+module.exports = {
+  SelectionEngine,
+  SelectionProvider,
+  BrowserProvider,
+  WindowsUIAProvider,
+  OCRProvider,
+  ClipboardProvider,
+  ManualFallbackProvider,
+  chooseBestPickedInfo,
+  createDefaultEngine,
+};
