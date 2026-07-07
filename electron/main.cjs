@@ -1201,6 +1201,17 @@ function handleSelectionHelperLine(line) {
         confidence: picked.confidence,
       }));
     } else if (picked && picked.text) {
+      // Drag distance guard: small drag with stale/uncertain result => block toolbar
+      // Browser fast path (high confidence) and fresh clipboard are always allowed
+      const dragDist = context?.dragDistance || 0;
+      const source = picked.source || picked.provider || picked.resultProvider || 'unknown';
+      const conf = picked.confidence || 0;
+      const isHighConfBrowser = ['browser', 'browser-extension', 'youtube-native-caption', 'trancy-caption'].includes(source) && conf >= 0.86;
+      const isFreshClipboard = source === 'clipboard' && picked.metadata?.clipboardChanged;
+      if (dragDist > 0 && dragDist < 18 && !isHighConfBrowser && !isFreshClipboard) {
+        console.log('[Toolbar] blocked show reason=drag-too-small distance=' + Math.round(dragDist) + ' source=' + source + ' conf=' + conf);
+        return;
+      }
       const refinedPicked = applyMouseRefinement(picked, rawText, clipboardText, meta);
       if (shouldBlockUnrefinedSubtitleClipboard(refinedPicked, meta)) {
         console.log('[selection:autoSelect] blocked unrefined subtitle clipboard sentence:', JSON.stringify({
@@ -1213,11 +1224,16 @@ function handleSelectionHelperLine(line) {
       showToolbarForPicked(refinedPicked);
     } else if (rawText) {
       // Fallback: if engine returns nothing, use the raw text from the hook
+      const dragDist = context?.dragDistance || 0;
+      if (dragDist > 0 && dragDist < 18) {
+        console.log('[Toolbar] blocked fallback show reason=drag-too-small distance=' + Math.round(dragDist) + ' source=clipboard');
+        return;
+      }
       showToolbarForPicked({
         text: rawText,
         fullText: rawText,
         source: 'clipboard',
-        confidence: 0.5,
+        confidence: 0.45,
         metadata: { rawFromHook: true },
       });
     }
@@ -1257,6 +1273,19 @@ function showToolbarForText(selected) {
  */
 function showToolbarForPicked(picked) {
   if (!picked || !picked.text) return;
+  // Text quality: block if text is just whitespace
+  const text = String(picked.text || '').trim();
+  if (!text) {
+    console.log('[Toolbar] blocked show reason=empty-text');
+    return;
+  }
+  // Low-confidence guard: block if confidence < 0.5 and not from browser
+  const source = picked.source || picked.provider || 'unknown';
+  const conf = picked.confidence || 0;
+  if (conf < 0.5 && source !== 'browser') {
+    console.log('[Toolbar] blocked show reason=low-confidence conf=' + conf + ' source=' + source);
+    return;
+  }
   // New selection while AI generating or result visible: cancel old state first
   if (overlayState === 'ai_generating' || overlayState === 'result_visible') {
     console.log('[Toolbar] new selection resetting overlayState=' + overlayState);
