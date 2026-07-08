@@ -30,3 +30,6 @@ dist-ssr
 # Runtime
 .doubao-selection-trace*
 .tmp
+
+# Design preview documents
+design-preview/
