@@ -1000,7 +1000,7 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
       <div className="skill-manager-head">
         <div>
           <strong>AI 划词工具栏</strong>
-          <span>当前工具条显示 {visibleCount}/5 个。拖动技能行可调整工具条顺序，点击技能可展开操作。</span>
+          <span>排列顺序即显示位置。前 5 个显示在划词工具条，拖拽即可调整顺序。</span>
         </div>
         <button className="primary" onClick={newSkill}>新建技能</button>
       </div>
@@ -1033,7 +1033,7 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
                 <span className="drag-dots">⠿</span>
                 <span className="skill-icon">{skill.icon || '•'}</span>
                 <strong>{skill.name}</strong>
-                {!skill.showInToolbar ? <em>已隐藏</em> : null}
+                {!skill.showInToolbar ? <em>在更多菜单中</em> : null}
               </button>
               {expanded ? (
                 <div className="skill-card-actions">
@@ -1108,10 +1108,10 @@ function SkillEditDialog({ skill, onChange, onClose, onSave }: { skill: Skill; o
         </div>
         <textarea className="skill-prompt-box" value={skill.userPrompt} onChange={(event) => onChange({ ...skill, userPrompt: event.target.value })} />
 
-        <div className="skill-dialog-options">
-          <label><input type="checkbox" checked={skill.enabled} onChange={(event) => onChange({ ...skill, enabled: event.target.checked })} />启用技能</label>
-          <label><input type="checkbox" checked={skill.showInToolbar} onChange={(event) => onChange({ ...skill, showInToolbar: event.target.checked })} />显示在工具条</label>
-        </div>
+
+
+
+
 
         {error ? <div className="skill-error">{error}</div> : null}
         {!custom ? <p className="skill-system-note">这是内置技能，可以改名称、图标和提示词，但不能删除。</p> : null}
@@ -1514,10 +1514,10 @@ function ToolbarView() {
       toolbarRef={toolbarRef}
       shellRef={toolbarShellRef}
       onRunSkill={run}
-      onCopy={async () => {
-        await window.desktopApi.copyText(selection, { silent: true })
-        await window.desktopApi.hideToolbar()
-      }}
+
+
+
+
       onMore={toggleMore}
       onGripDown={onGripDown}
       onPointerEnter={() => window.desktopApi.setToolbarPointerInside(true)}

@@ -10,7 +10,6 @@ type ToolbarProps = {
   toolbarRef: RefObject<HTMLDivElement>
   shellRef: RefObject<HTMLDivElement>
   onRunSkill: (skillId: string) => void
-  onCopy: () => void
   onMore: () => void
   onGripDown: (event: ReactMouseEvent) => void
   onPointerEnter: () => void
@@ -25,7 +24,6 @@ export function Toolbar({
   toolbarRef,
   shellRef,
   onRunSkill,
-  onCopy,
   onMore,
   onGripDown,
   onPointerEnter,
@@ -40,14 +38,6 @@ export function Toolbar({
     >
       <div ref={toolbarRef} className="selection-toolbar" onMouseDown={onGripDown} title="按住空白处拖动">
         {actions.map((action) => {
-          if (action.kind === 'copy') {
-            return (
-              <button key={action.id} className="toolbar-button" onMouseDown={(event) => event.stopPropagation()} onClick={onCopy}>
-                <span className="toolbar-button-icon" dangerouslySetInnerHTML={{ __html: action.icon }} />
-                <span className="toolbar-button-label">{action.label}</span>
-              </button>
-            )
-          }
           if (action.kind === 'more') {
             return (
               <Fragment key={action.id}>

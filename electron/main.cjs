@@ -248,6 +248,20 @@ const defaultSettings = {
 
 const defaultSkills = [
   {
+    id: 'copy',
+    name: '复制',
+    icon: '📋',
+    enabled: true,
+    showInToolbar: true,
+    systemPrompt: '',
+    userPrompt: '',
+    outputMode: 'popup',
+    sortOrder: 0,
+    type: 'builtin',
+    builtinAction: 'copy',
+    deletable: false,
+  },
+  {
     id: 'smart_translate',
     name: '<翻译>',
     icon: '◇',
@@ -1534,14 +1548,31 @@ function getToolbarSkills() {
 }
 
 function enforceToolbarSkillLimit(skills) {
-  let shown = 0;
-  return [...skills]
-    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
-    .map((skill) => {
-      if (!skill.enabled || !skill.showInToolbar) return skill;
-      shown += 1;
-      return shown <= 5 ? skill : { ...skill, showInToolbar: false };
-    });
+  return skills;
+}
+
+function normalizeSkillOrder(skills, orderedIds) {
+  const existingIds = new Set(skills.map(s => s.id));
+  const seen = new Set();
+  const validOrderedIds = Array.isArray(orderedIds)
+    ? orderedIds.filter(id => {
+        if (!existingIds.has(id)) return false;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      })
+    : [];
+  const orderedIdSet = new Set(validOrderedIds);
+  const orderedSkills = validOrderedIds
+    .map(id => skills.find(s => s.id === id))
+    .filter(Boolean);
+  const remainingSkills = skills
+    .filter(s => !orderedIdSet.has(s.id))
+    .sort((a, b) => (a.sortOrder || 9999) - (b.sortOrder || 9999));
+  return [...orderedSkills, ...remainingSkills].map((skill, index) => ({
+    ...skill,
+    sortOrder: index * 10,
+  }));
 }
 
 function broadcastSkillsUpdated() {
@@ -2104,10 +2135,7 @@ ipcMain.handle('skills:save', (_event, skill) => updateStore((store) => {
   return store;
 }));
 ipcMain.handle('skills:reorder', (_event, skillIds) => updateStore((store) => {
-  const orderMap = new Map((Array.isArray(skillIds) ? skillIds : []).map((id, index) => [id, (index + 1) * 10]));
-  store.skills = store.skills
-    .map((skill) => ({ ...skill, sortOrder: orderMap.get(skill.id) || skill.sortOrder || 999 }))
-    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  store.skills = normalizeSkillOrder(store.skills, skillIds);
   store.skills = enforceToolbarSkillLimit(store.skills);
   queueMicrotask(broadcastSkillsUpdated);
   return store;

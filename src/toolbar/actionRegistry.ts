@@ -13,7 +13,6 @@ export type ToolbarMode = 'english-word' | 'english-sentence' | 'chinese' | 'unk
 
 export type ToolbarAction =
   | { kind: 'skill'; id: string; label: string; icon: string; skill: ToolbarSkill }
-  | { kind: 'copy'; id: 'copy'; label: string; icon: string }
   | { kind: 'more'; id: 'more'; label: string; icon: string }
 
 const TOOLBAR_SKILL_LIMIT = 5
@@ -60,7 +59,6 @@ export function buildToolbarActions(skills: ToolbarSkill[], selection: string): 
 
   return [
     ...primary,
-    { kind: 'copy', id: 'copy', label: '复制', icon: ICONS.copy },
     { kind: 'more', id: 'more', label: '更多', icon: ICONS.more },
   ]
 }
