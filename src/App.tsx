@@ -8,6 +8,7 @@ import { MoreMenu } from './toolbar/MoreMenu'
 import { ResultCardChrome } from './toolbar/ResultCardChrome'
 import { buildMoreMenuSkills, buildToolbarActions } from './toolbar/actionRegistry'
 import brandImg from './assets/icon.png'
+import { SkillIcon, SKILL_ICON_KEYS, getDefaultSkillIconKey } from './components/SkillIcon'
 import './App.css'
 
 // ─── types ───
@@ -195,6 +196,7 @@ const emptySkill: Skill = {
   id: 'custom_skill',
   name: '自定义',
   icon: '自',
+  iconKey: 'spark',
   enabled: true,
   showInToolbar: true,
   systemPrompt: '你是 饺划-AI划词助手，请用中文回答。',
@@ -264,29 +266,43 @@ function MainView() {
   return (
     <div className="main-window-wrap">
       <div className="main-glass-window">
-        <aside className="soft-sidebar">
+        <aside className="sidebar">
           <div className="brand">
-            <img className="brand-mark" src={brandImg} alt="" />
-            <div><h1>饺划-AI划词助手</h1><p>Selection Copilot</p></div>
+            <div className="brand-icon">🧤</div>
+            <div>
+              <div className="brand-title">饺划-AI划词助手</div>
+              <div className="brand-sub">Selection Copilot</div>
+            </div>
           </div>
-          <nav>
+          <nav className="nav">
             {[
-              ['history', '历史'],
-              ['settings', 'API'],
-              ['skills', '技能'],
-              ['obsidian', 'Obsidian'],
-            ].map(([id, label]) => (
-              <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id as typeof tab)}>{label}</button>
+              ['history', '●', '历史对话'],
+              ['settings', '⚙', 'API 设置'],
+              ['skills', '◆', '技能管理'],
+              ['obsidian', '●', 'Obsidian 导入'],
+            ].map(([id, icon, label]) => (
+              <div
+                key={id}
+                className={'nav-item' + (tab === id ? ' active' : '')}
+                onClick={() => setTab(id as typeof tab)}
+              >
+                <span className="nav-icon">{icon}</span>
+                <span>{label}</span>
+              </div>
             ))}
           </nav>
+          <div className="sidebar-spacer" />
           <HotkeyCard />
+          <div className="version">v1.0.0</div>
         </aside>
 
         <main className="main-panel">
-          <header className="topbar">
-            <div><h2>{tabTitle(tab)}</h2><p>{tabSubtitle(tab)}</p></div>
-            {message ? <span className="toast">{message}</span> : null}
-          </header>
+          {tab !== 'skills' && tab !== 'history' && tab !== 'settings' && tab !== 'obsidian' ? (
+            <header className="topbar">
+              <div><h2>{tabTitle(tab)}</h2><p>{tabSubtitle(tab)}</p></div>
+              {message ? <span className="toast">{message}</span> : null}
+            </header>
+          ) : null}
           {tab === 'history' && <HistoryPanel history={data.history} conversations={data.conversations} activeConversationId={data.activeConversationId} onRefresh={refreshConversations} templates={data.obsidianTemplates} activeTemplateId={data.settings.obsidian.activeTemplateId} />}
           {tab === 'settings' && <ApiPanel />}
           {tab === 'skills' && <SkillsPanel skills={data.skills} onSave={saveSkill} onDelete={deleteSkill} onReorder={reorderSkills} />}
@@ -392,7 +408,7 @@ function tabSubtitle(tab: string) {
   }[tab] || ''
 }
 
-function HistoryPanel({ history, conversations, activeConversationId, onRefresh, templates, activeTemplateId }: { history: HistoryRecord[]; conversations: Conversation[]; activeConversationId: string; onRefresh: () => void; templates: ObsidianTemplate[]; activeTemplateId?: string }) {
+﻿function HistoryPanel({ history, conversations, activeConversationId, onRefresh, templates, activeTemplateId }: { history: HistoryRecord[]; conversations: Conversation[]; activeConversationId: string; onRefresh: () => void; templates: ObsidianTemplate[]; activeTemplateId?: string }) {
   const [filter, setFilter] = useState('')
   const [convSearch, setConvSearch] = useState('')
   const [message, setMessage] = useState('')
@@ -422,6 +438,17 @@ function HistoryPanel({ history, conversations, activeConversationId, onRefresh,
     return [...pinned, ...unpinned]
   }, [filteredConvs])
 
+  // ─── 对话分组 ───
+  const convGroups = useMemo(() => {
+    const map = new Map<string, Conversation[]>()
+    for (const c of sortedConvs) {
+      const key = formatDateGroup(c.lastActivityAt)
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(c)
+    }
+    return Array.from(map.entries())
+  }, [sortedConvs])
+
   const enterSelectMode = () => { setSelectMode(true); setSelectedIds(new Set()) }
   const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()) }
 
@@ -444,6 +471,7 @@ function HistoryPanel({ history, conversations, activeConversationId, onRefresh,
     })
   }
 
+  const allSelected = convRecords.length > 0 && convRecords.every((r) => selectedIds.has(r.id))
   const selectAll = () => { setSelectedIds(new Set(convRecords.map((r) => r.id))) }
   const deselectAll = () => { setSelectedIds(new Set()) }
 
@@ -453,10 +481,8 @@ function HistoryPanel({ history, conversations, activeConversationId, onRefresh,
     if (records.length === 0) { setMessage('没有可导入的记录'); return }
     let ok = 0, fail = 0
     for (const r of records) {
-      try {
-        await saveRecordToActiveObsidian(r)
-        ok++
-      } catch { fail++ }
+      try { await saveRecordToActiveObsidian(r); ok++ }
+      catch { fail++ }
     }
     setMessage(`已导入 ${ok} 条${fail > 0 ? `，${fail} 条失败` : ''}`)
   }
@@ -466,126 +492,137 @@ function HistoryPanel({ history, conversations, activeConversationId, onRefresh,
   const deleteSingle = async (id: string) => { await window.desktopApi.deleteHistory([id]); onRefresh() }
   const deleteSelected = async () => { if (selectedIds.size) { await window.desktopApi.deleteHistory([...selectedIds]); onRefresh() } }
 
-  return (
-    <div className="conversations-layout">
-      {/* ───── 左侧对话列表 ───── */}
-      <aside className="conv-sidebar">
-        <input className="search" placeholder="搜索对话..." value={convSearch} onChange={(e) => setConvSearch(e.target.value)} />
-        <button className="primary" onClick={async () => {
-          await window.desktopApi.createConversation('')
-          onRefresh()
-        }}>+ 新对话</button>
-        <div className="conv-list">
-          {sortedConvs.map((conv) => (
-            <ConversationItem
-              key={conv.id}
-              conv={conv}
-              active={conv.id === activeConversationId}
-              editing={editingConvId === conv.id}
-              editTitle={editingConvTitle}
-              onSelect={async () => {
-                await window.desktopApi.setActiveConversation(conv.id)
-                onRefresh()
-              }}
-              onEditStart={(title) => { setEditingConvId(conv.id); setEditingConvTitle(title) }}
-              onEditConfirm={async () => {
-                await window.desktopApi.renameConversation(conv.id, editingConvTitle)
-                setEditingConvId('')
-                onRefresh()
-              }}
-              onPin={async () => { await window.desktopApi.pinConversation(conv.id); onRefresh() }}
-              onDelete={async () => {
-                if (conversations.length <= 1) { setMessage('至少保留一个对话'); return }
-                const delRecords = window.confirm('同时删除对话中的所有记录？\n"确定"=删除记录，"取消"=只删除对话')
-                await window.desktopApi.deleteConversation(conv.id, delRecords)
-                setEditingConvId('')
-                onRefresh()
-              }}
-            />
-          ))}
-        </div>
-      </aside>
+  // ─── 全部展开/收起 ───
+  const allExpanded = convRecords.length > 0 && convRecords.every((r) => expandedIds.has(r.id))
+  const toggleAllExpanded = () => {
+    if (allExpanded) {
+      const next = new Set(expandedIds)
+      convRecords.forEach((r) => next.delete(r.id))
+      setExpandedIds(next)
+    } else {
+      const next = new Set(expandedIds)
+      convRecords.forEach((r) => next.add(r.id))
+      setExpandedIds(next)
+    }
+  }
 
-      {/* ───── 右侧对话内容 ───── */}
-      <div className="conv-content">
-          <div className="conv-header">
-            <h3>{activeConv?.title || '历史记录'}</h3>
-            <span>{convRecords.length} 条记录</span>
-            <div className="conv-header-actions">
-              <button onClick={() => setExpandedIds(new Set())}>全部折叠</button>
-              <button onClick={() => {
-                const latest = convRecords[0]
-                if (latest) setExpandedIds(new Set([latest.id]))
-              }}>展开最新</button>
-            </div>
+  // ─── 对话记录数 ───
+  const conversationRecordCounts = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const r of history) {
+      map.set(r.conversationId || '', (map.get(r.conversationId || '') || 0) + 1)
+    }
+    return map
+  }, [history])
+
+  return (
+    <div className="history-page">
+      <div className="history-head">
+        <div>
+          <h1>对话式历史</h1>
+          <p>每次划词都会保存为一组轻量 AI 对话。</p>
+        </div>
+      </div>
+
+      <div className="history-layout">
+        <aside className="conversation-pane">
+          <input className="conversation-search" placeholder="搜索对话..." value={convSearch} onChange={(e) => setConvSearch(e.target.value)} />
+          <button className="new-conversation-btn" onClick={async () => { await window.desktopApi.createConversation(''); onRefresh() }}>+ 新对话</button>
+          <div className="conversation-list">
+            {convGroups.length === 0 ? (
+              <div className="empty">没有找到对话</div>
+            ) : (
+              convGroups.map(([label, convs]) => (
+                <div key={label}>
+                  <div className="conv-date-label">{label}</div>
+                  {convs.map((conv) => (
+                    <ConversationItem
+                      key={conv.id}
+                      conv={conv}
+                      active={conv.id === activeConversationId}
+                      editing={editingConvId === conv.id}
+                      editTitle={editingConvTitle}
+                      recordCount={conversationRecordCounts.get(conv.id) || 0}
+                      onSelect={async () => { await window.desktopApi.setActiveConversation(conv.id); onRefresh() }}
+                      onEditStart={(title) => { setEditingConvId(conv.id); setEditingConvTitle(title) }}
+                      onEditConfirm={async () => { await window.desktopApi.renameConversation(conv.id, editingConvTitle); setEditingConvId(''); onRefresh() }}
+                      onPin={async () => { await window.desktopApi.pinConversation(conv.id); onRefresh() }}
+                      onDelete={async () => {
+                        if (conversations.length <= 1) { setMessage('至少保留一个对话'); return }
+                        const delRecords = window.confirm('同时删除对话中的所有记录？\n"确定"=删除记录，"取消"=只删除对话')
+                        await window.desktopApi.deleteConversation(conv.id, delRecords)
+                        setEditingConvId('')
+                        onRefresh()
+                      }}
+                    />
+                  ))}
+                </div>
+              ))
+            )}
           </div>
-          {message ? <div className="inline-message">{message}</div> : null}
-          <div className="history-toolbar">
-            <input className="search" placeholder="搜索当前对话..." value={filter} onChange={(e) => setFilter(e.target.value)} />
+        </aside>
+
+        <section className="records-pane">
+          <div className="records-head">
+            <div>
+              <h2>{activeConv?.title || '对话式历史'}</h2>
+              <p>{convRecords.length} 条记录</p>
+            </div>
             {!selectMode ? (
-              <div className="history-toolbar-actions">
-                <button onClick={enterSelectMode}>选择</button>
-                {activeTpl ? (
-                  <div className="tpl-selector">
-                    <button className="tpl-chip" onClick={() => setTplOpen(!tplOpen)}>
-                      <span className="tpl-label">模板</span>
-                      <span className="tpl-name">{activeTpl.name}</span>
-                      <span className={`tpl-arrow${tplOpen ? ' open' : ''}`}>▾</span>
-                    </button>
-                    {tplOpen ? (
-                      <div className="tpl-dropdown">
-                        {templates.map((t) => (
-                          <button key={t.id} className={t.id === activeTpl.id ? 'tpl-item active' : 'tpl-item'} onClick={() => switchTemplate(t.id)}>
-                            {t.id === activeTpl.id ? '✓ ' : ''}{t.name}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                <button className="obsidian-import-btn" onClick={importAllToObsidian} disabled={convRecords.length === 0}>全部导入到 Obsidian</button>
+              <div className="history-actions">
+                <button className="btn" onClick={toggleAllExpanded}>{allExpanded ? '全部收起' : '全部展开'}</button>
+                <button className="btn primary" onClick={enterSelectMode}>选择</button>
               </div>
             ) : (
-              <div className="history-toolbar-actions select-mode-bar">
-                <span className="selected-count">已选择 {selectedIds.size} 条</span>
-                <button onClick={selectAll}>全选</button>
-                <button onClick={deselectAll}>取消选择</button>
+              <div className="selection-toolbar">
+                <span className="select-pill">已选择 {selectedIds.size} 条</span>
+                <button className="btn" onClick={allSelected ? deselectAll : selectAll}>{allSelected ? '取消全选' : '全选'}</button>
+                <div className="grow" />
                 {activeTpl ? (
                   <div className="tpl-selector">
                     <button className="tpl-chip" onClick={() => setTplOpen(!tplOpen)}>
                       <span className="tpl-label">模板</span>
                       <span className="tpl-name">{activeTpl.name}</span>
-                      <span className={`tpl-arrow${tplOpen ? ' open' : ''}`}>▾</span>
+                      <span className={'tpl-arrow' + (tplOpen ? ' open' : '')}>▾</span>
                     </button>
                     {tplOpen ? (
                       <div className="tpl-dropdown">
                         {templates.map((t) => (
-                          <button key={t.id} className={t.id === activeTpl.id ? 'tpl-item active' : 'tpl-item'} onClick={() => switchTemplate(t.id)}>
-                            {t.id === activeTpl.id ? '✓ ' : ''}{t.name}
-                          </button>
+                          <button key={t.id} className={'tpl-item' + (t.id === activeTpl.id ? ' active' : '')} onClick={() => switchTemplate(t.id)}>{t.id === activeTpl.id ? '✓ ' : ''}{t.name}</button>
                         ))}
                       </div>
                     ) : null}
                   </div>
                 ) : null}
-                <button className="obsidian-import-btn" onClick={importSelectedToObsidian} disabled={selectedIds.size === 0}>导入选中到 Obsidian</button>
-                <button onClick={() => { if (confirm(`确定删除选中的 ${selectedIds.size} 条记录吗？`)) { deleteSelected(); exitSelectMode() } }} disabled={selectedIds.size === 0}>删除选中</button>
-                <button onClick={exitSelectMode}>退出选择</button>
+                <button className="btn purple" onClick={importSelectedToObsidian} disabled={selectedIds.size === 0}>导入 Obsidian</button>
+                <button className="btn danger" onClick={() => { if (confirm('确定删除选中的 ' + selectedIds.size + ' 条记录吗？')) { deleteSelected(); exitSelectMode() } }} disabled={selectedIds.size === 0}>删除</button>
+                <button className="btn" onClick={exitSelectMode}>完成</button>
               </div>
             )}
           </div>
-          <div className="history-list">
-            {convRecords.length === 0 ? <div className="empty">选择文字后，AI 结果会保存到这个对话。</div> : null}
-            <DateGroupedRecords
-              items={convRecords}
-              expandedIds={expandedIds}
-              toggleExpand={(id) => setExpandedIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next })}
-              selectMode={selectMode}
-              selectedIds={selectedIds}
-              onToggleSelect={toggleSelectId}
-              onDelete={selectMode ? undefined : deleteSingle}
-            />
+
+          <div className="records-search">
+            <input className="search" placeholder="搜索当前对话..." value={filter} onChange={(e) => setFilter(e.target.value)} />
           </div>
+
+          {message ? <div className="history-message" onClick={() => setMessage('')}>{message}</div> : null}
+
+          <div className="record-list">
+            {convRecords.length === 0 ? (
+              <div className="empty">选择文字后，AI 结果会保存到这个对话。</div>
+            ) : (
+              <DateGroupedRecords
+                items={convRecords}
+                expandedIds={expandedIds}
+                toggleExpand={(id) => setExpandedIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next })}
+                selectMode={selectMode}
+                selectedIds={selectedIds}
+                onToggleSelect={toggleSelectId}
+                onDelete={selectMode ? undefined : deleteSingle}
+              />
+            )}
+          </div>
+        </section>
       </div>
     </div>
   )
@@ -593,29 +630,32 @@ function HistoryPanel({ history, conversations, activeConversationId, onRefresh,
 
 /* ───── 对话列表项 ───── */
 
-function ConversationItem({ conv, active, editing, editTitle, onSelect, onEditStart, onEditConfirm, onPin, onDelete }: {
-  conv: Conversation; active: boolean; editing: boolean; editTitle: string;
+function ConversationItem({ conv, active, editing, editTitle, recordCount, onSelect, onEditStart, onEditConfirm, onPin, onDelete }: {
+  conv: Conversation; active: boolean; editing: boolean; editTitle: string; recordCount: number;
   onSelect: () => void; onEditStart: (t: string) => void; onEditConfirm: () => void; onPin: () => void; onDelete: () => void;
 }) {
   return (
-    <div className={active ? 'conv-item active' : 'conv-item'} onClick={onSelect}>
+    <div className={'conversation-item' + (active ? ' active' : '')} onClick={onSelect}>
       {editing ? (
-        <input className="conv-edit-input" value={editTitle} onChange={(e) => onEditStart?.(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') onEditConfirm() }} onBlur={onEditConfirm} autoFocus onClick={(e) => e.stopPropagation()} />
+        <input className="conv-edit-input" value={editTitle} onChange={(e) => onEditStart(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') onEditConfirm() }} onBlur={onEditConfirm} autoFocus onClick={(e) => e.stopPropagation()} />
       ) : (
-        <div className="conv-item-main">
-          <span className="conv-title">{conv.pinned ? '📌 ' : ''}{conv.title}</span>
-          <div className="conv-actions" onClick={(e) => e.stopPropagation()}>
-            <button title="重命名" onClick={() => onEditStart(conv.title)}>✏️</button>
-            <button title={conv.pinned ? '取消置顶' : '置顶'} onClick={onPin}>{conv.pinned ? '📌' : '📍'}</button>
-            <button title="删除" onClick={onDelete}>🗑️</button>
-          </div>
-        </div>
+        <>
+          <div className="conversation-item-title">{conv.pinned ? '📌 ' : ''}{conv.title}</div>
+          <div className="conversation-item-meta">{recordCount} 条记录</div>
+          {active ? (
+            <div className="conv-actions" onClick={(e) => e.stopPropagation()}>
+              <button title="重命名" onClick={() => onEditStart(conv.title)}>✏️</button>
+              <button title={conv.pinned ? '取消置顶' : '置顶'} onClick={onPin}>{conv.pinned ? '📌' : '📍'}</button>
+              <button title="删除" onClick={onDelete}>🗑️</button>
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   )
 }
 
-/* ───── 折叠记录列表 ───── */
+/* ───── 记录分组 ───── */
 
 function formatDateGroup(dateStr: string): string {
   const d = new Date(dateStr)
@@ -623,8 +663,8 @@ function formatDateGroup(dateStr: string): string {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const yesterday = new Date(today.getTime() - 86400000)
   const itemDay = new Date(d.getFullYear(), d.getMonth(), d.getDate())
-  if (itemDay.getTime() === today.getTime()) return '今天'
-  if (itemDay.getTime() === yesterday.getTime()) return '昨天'
+  if (itemDay.getTime() === today.getTime()) return '\u4eca\u5929'
+  if (itemDay.getTime() === yesterday.getTime()) return '\u6628\u5929'
   return d.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
 }
 
@@ -645,7 +685,7 @@ function DateGroupedRecords({ items, expandedIds, toggleExpand, selectMode, sele
         <div key={label} className="date-group">
           <div className="date-group-header">{label}</div>
           {records.map((item) => (
-            <CollapsibleRecordItem
+            <RecordCard
               key={item.id} item={item}
               expanded={expandedIds.has(item.id)}
               onToggle={() => toggleExpand(item.id)}
@@ -661,18 +701,13 @@ function DateGroupedRecords({ items, expandedIds, toggleExpand, selectMode, sele
   )
 }
 
-function CollapsibleRecordItem({ item, expanded, onToggle, selectMode, checked, onToggleSelect, onDelete }: { item: HistoryRecord; expanded: boolean; onToggle: () => void; selectMode?: boolean; checked?: boolean; onToggleSelect?: () => void; onDelete?: (id: string) => void }) {
+function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSelect, onDelete }: { item: HistoryRecord; expanded: boolean; onToggle: () => void; selectMode?: boolean; checked?: boolean; onToggleSelect?: () => void; onDelete?: (id: string) => void }) {
   const [actionStatus, setActionStatus] = useState('')
   const isRunning = item.status === 'running'
 
-  const onAction = (e: React.MouseEvent, fn: () => void) => {
-    e.stopPropagation()
-    fn()
-  }
-
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (confirm('确定删除这条记录吗？')) onDelete?.(item.id)
+    if (confirm('\u786e\u5b9a\u5220\u9664\u8fd9\u6761\u8bb0\u5f55\u5417\uff1f')) onDelete?.(item.id)
   }
 
   const handleHeaderClick = () => {
@@ -681,62 +716,42 @@ function CollapsibleRecordItem({ item, expanded, onToggle, selectMode, checked, 
   }
 
   return (
-    <article className={expanded ? 'collapsible-card expanded' : 'collapsible-card'}>
-      {/* 折叠头 */}
-      <div className={`collapsible-header${selectMode ? ' selectable' : ''}`} onClick={handleHeaderClick}>
+    <article className={'record-card' + (expanded ? ' expanded' : '')}>
+      <div className="record-card-head" onClick={handleHeaderClick}>
         {selectMode ? (
           <input type="checkbox" className="record-checkbox" checked={checked || false} onChange={onToggleSelect} onClick={(e) => e.stopPropagation()} />
         ) : (
-          <span className="collapsible-arrow">{expanded ? '▾' : '▸'}</span>
+          <span className={'record-card-arrow' + (expanded ? ' open' : '')}>▶</span>
         )}
-        <span className="collapsible-badge">{item.skillName}</span>
-        <span className="collapsible-preview">{item.selectedText.slice(0, 60)}{item.selectedText.length > 60 ? '...' : ''}</span>
-        <span className="collapsible-meta">
-          {new Date(item.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-          {' · '}{item.model}
-          {' · '}<span className={item.status === 'completed' ? 'ok' : item.status === 'running' ? 'running' : 'bad'}>
-            {item.status === 'completed' ? '完成' : item.status === 'running' ? '生成中' : '失败'}
-          </span>
-          {!selectMode ? <button className="record-delete-btn" onClick={handleDelete} title="删除">×</button> : null}
-        </span>
+        <span className="record-skill-badge">{item.skillName}</span>
+        <span className="record-preview">{item.selectedText.slice(0, 60)}{item.selectedText.length > 60 ? '...' : ''}</span>
+        <span className="record-time">{new Date(item.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
+        {!selectMode ? (
+          <button className="record-card-delete" onClick={(e) => { e.stopPropagation(); if (confirm('\u786e\u5b9a\u5220\u9664\u8fd9\u6761\u8bb0\u5f55\u5417\uff1f')) { onDelete?.(item.id) } }} title="删除">×</button>
+        ) : null}
       </div>
 
-      {/* 展开内容 */}
       {expanded && (
-        <div className="collapsible-body">
-          <div className="record-block source-block">
-            <span className="record-block-label">原文</span>
-            <p>{item.selectedText}</p>
+        <div className="record-card-body">
+          <div className="record-source">
+            <div className="record-source-label">原文</div>
+            <div className="record-source-text">{item.selectedText}</div>
           </div>
           {item.pronunciationData ? (
             <PronunciationCard data={item.pronunciationData} answer={item.answerMarkdown} status={item.status} />
           ) : (
-            <div className="record-block answer-block">
-              <span className="record-block-label">AI 回答</span>
+            <div className="record-answer">
+              <div className="record-answer-label">AI 回答</div>
               {item.answerMarkdown ? <MarkdownView text={item.answerMarkdown} /> : isRunning ? <TypingDots /> : null}
             </div>
           )}
           <div className="record-actions">
             <div className="record-actions-left">
-              <button className="pill-btn" onClick={(e) => onAction(e, async () => {
-                await window.desktopApi.copyText(item.answerMarkdown)
-                setActionStatus('已复制')
-              })}>复制</button>
-              <button className="pill-btn" onClick={(e) => onAction(e, async () => {
-                try {
-                  const result = await saveRecordToActiveObsidian(item)
-                  setActionStatus(`已保存：${result.path}`)
-                } catch (error) {
-                  setActionStatus(error instanceof Error ? error.message : String(error))
-                }
-              })}>保存到 Obsidian</button>
-              <button className="pill-btn" onClick={(e) => onAction(e, () => window.desktopApi.speak(item.answerMarkdown))}>朗读</button>
+              <button className="pill-btn" onClick={(e) => { e.stopPropagation(); window.desktopApi.copyText(item.answerMarkdown); setActionStatus('\u5df2\u590d\u5236') }}>复制</button>
+              <button className="pill-btn" onClick={(e) => { e.stopPropagation(); saveRecordToActiveObsidian(item).then((r) => setActionStatus('\u5df2\u4fdd\u5b58\uff1a' + r.path)).catch((err) => setActionStatus(err instanceof Error ? err.message : String(err))) }}>保存到 Obsidian</button>
+              <button className="pill-btn" onClick={(e) => { e.stopPropagation(); window.desktopApi.speak(item.answerMarkdown) }}>朗读</button>
             </div>
-            <button className="pill-btn danger" onClick={(e) => onAction(e, () => {
-              if (window.confirm('确定删除这条记录吗？')) {
-                window.desktopApi.deleteHistory([item.id])
-              }
-            })}>删除</button>
+            <button className="pill-btn danger" onClick={handleDelete}>删除</button>
             {actionStatus ? <span className="action-status">{actionStatus}</span> : null}
           </div>
         </div>
@@ -745,7 +760,8 @@ function CollapsibleRecordItem({ item, expanded, onToggle, selectMode, checked, 
   )
 }
 
-function ApiPanel() {
+
+﻿function ApiPanel() {
   const [config, setConfig] = useState<ProviderConfigSnapshot | null>(null)
   const [presets, setPresets] = useState<ProvidersMap | null>(null)
   const [selectedId, setSelectedId] = useState('deepseek')
@@ -776,7 +792,6 @@ function ApiPanel() {
   const save = async (updates: Record<string, Partial<ProviderUserConfig>>) => {
     setMessage('')
     setTestResult(null)
-    // Optimistic local update
     const next = { ...config, providers: { ...config.providers } }
     if (updates[selectedId]) {
       next.providers[selectedId] = { ...next.providers[selectedId], ...updates[selectedId] }
@@ -819,239 +834,282 @@ function ApiPanel() {
   }
 
   return (
-    <div className="api-layout">
-      {/* Sidebar */}
-      <aside className="api-sidebar">
-        {Object.entries(presets).map(([id, p]) => (
-          <button key={id} className={selectedId === id ? 'api-provider-item active' : 'api-provider-item'} onClick={() => switchProvider(id)}>
-            <span className="api-provider-name">{p.name}</span>
-            {config.providers[id]?.enabled ? <span className="api-provider-dot" /> : null}
-          </button>
-        ))}
-      </aside>
+    <div className="api-page">
+      <div className="api-head">
+        <div>
+          <h1>API 设置</h1>
+          <p>配置 DeepSeek 或 OpenAI-compatible 接口。API Key 仅保存在本地。</p>
+        </div>
+      </div>
 
-      {/* Main config */}
-      <div className="api-panel">
-        <div className="api-panel-head">
-          <h3>{preset.name}</h3>
-          <label className="hotkey-toggle">
-            <button className={pcfg?.enabled !== false ? 'toggle on' : 'toggle'} onClick={() => save({ [selectedId]: { enabled: !(pcfg?.enabled !== false) } })}>
-              <span className="toggle-knob" />
+      <div className="api-layout">
+        <aside className="provider-pane">
+          <div className="provider-list">
+            {Object.entries(presets).map(([id, p]) => (
+              <button key={id} className={'provider-item' + (selectedId === id ? ' active' : '')} onClick={() => switchProvider(id)}>
+                <div>
+                  <strong>{p.name}</strong>
+                  <span>{p.apiType === 'openai-compatible' ? 'OpenAI-compatible' : p.apiType}</span>
+                </div>
+                {config.providers[id]?.enabled && config.providers[id]?.apiKey ? (
+                  <span className="provider-status-dot configured" />
+                ) : (
+                  <span className="provider-status-dot" />
+                )}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="api-config-card">
+          <div className="api-config-head">
+            <div>
+              <h2>{preset.name}</h2>
+              <p>{preset.hint || (preset.baseUrl ? 'Base URL: ' + preset.baseUrl : '')}</p>
+            </div>
+          </div>
+
+          <div className="api-form">
+            <div className="form-row">
+              <label>API Key <span style={{ color: '#ef4444' }}>*</span></label>
+              <div className="input-wrap">
+                <input type={showKey ? 'text' : 'password'} value={pcfg?.apiKey || ''} onChange={(e) => save({ [selectedId]: { apiKey: e.target.value } })} placeholder="输入 API Key..." />
+                <button onClick={() => setShowKey(!showKey)}>{showKey ? '🙈' : '👁'}</button>
+              </div>
+              <div className="form-row-hint">API Key 仅保存在本地设备。</div>
+            </div>
+
+            <div className="form-row">
+              <label>{preset.modelLabel || '模型'}</label>
+              <div className="input-wrap">
+                <select value={pcfg?.model || preset.defaultModel} onChange={(e) => save({ [selectedId]: { model: e.target.value } })}>
+                  {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+                <button onClick={() => { setAddingModel(true); setNewModelName('') }} title="添加模型">+</button>
+                {(pcfg?.customModels || []).includes(pcfg?.model || '') ? <button onClick={removeModel} title="删除此模型">−</button> : null}
+              </div>
+              {addingModel ? (
+                <div className="model-add-row">
+                  <input value={newModelName} onChange={(e) => setNewModelName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addModel() }} placeholder="模型 ID..." autoFocus />
+                  <button onClick={addModel}>确认</button>
+                  <button onClick={() => setAddingModel(false)}>取消</button>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="form-row">
+              <label>Base URL</label>
+              <div className="input-wrap">
+                <input value={pcfg?.baseUrl || ''} onChange={(e) => save({ [selectedId]: { baseUrl: e.target.value } })} placeholder={preset.baseUrl || 'https://...'} />
+              </div>
+            </div>
+
+            <div className="form-row">
+              <label className="inline-label">
+                <input type="checkbox" checked={pcfg?.stream !== false} onChange={(e) => save({ [selectedId]: { stream: e.target.checked } })} />
+                <span>流式输出</span>
+              </label>
+            </div>
+
+            <button className="api-advanced-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
+              {showAdvanced ? '▲ 收起高级设置' : '▼ 高级设置'}
             </button>
-          </label>
-        </div>
 
-        {preset.hint ? <div className="api-hint">{preset.hint}</div> : null}
+            {showAdvanced ? (
+              <div className="api-advanced">
+                <div className="form-row">
+                  <label>Temperature</label>
+                  <div className="input-wrap">
+                    <input type="number" min={0} max={2} step={0.1} value={pcfg?.temperature ?? 0.3} onChange={(e) => save({ [selectedId]: { temperature: Number(e.target.value) } })} />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label>Max Tokens</label>
+                  <div className="input-wrap">
+                    <input type="number" min={1} max={32000} value={pcfg?.maxTokens ?? 1200} onChange={(e) => save({ [selectedId]: { maxTokens: Number(e.target.value) } })} />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label>Timeout (ms)</label>
+                  <div className="input-wrap">
+                    <input type="number" min={5000} max={300000} value={pcfg?.timeoutMs ?? 60000} onChange={(e) => save({ [selectedId]: { timeoutMs: Number(e.target.value) } })} />
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
-        <label className="api-field">
-          API Key
-          <div className="api-key-row">
-            <input type={showKey ? 'text' : 'password'} value={pcfg?.apiKey || ''} onChange={(e) => save({ [selectedId]: { apiKey: e.target.value } })} placeholder="输入 API Key..." />
-            <button className="api-key-eye" onClick={() => setShowKey(!showKey)}>{showKey ? '🙈' : '👁'}</button>
-          </div>
-        </label>
-
-        <label className="api-field">
-          {preset.modelLabel || '模型'}
-          <div className="api-model-row">
-            <select value={pcfg?.model || preset.defaultModel} onChange={(e) => save({ [selectedId]: { model: e.target.value } })}>
-              {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-            <button className="api-model-btn" onClick={() => { setAddingModel(true); setNewModelName('') }} title="添加模型">+</button>
-            {(pcfg?.customModels || []).includes(pcfg?.model || '') ? <button className="api-model-btn danger" onClick={removeModel} title="删除此模型">−</button> : null}
-          </div>
-          {addingModel ? (
-            <div className="api-model-add">
-              <input value={newModelName} onChange={(e) => setNewModelName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addModel() }} placeholder="模型 ID..." autoFocus />
-              <button onClick={addModel}>确认</button>
-              <button onClick={() => setAddingModel(false)}>取消</button>
-            </div>
-          ) : null}
-        </label>
-
-        {selectedId === 'custom' || preset.baseUrl === '' ? (
-          <label className="api-field">
-            Base URL
-            <input value={pcfg?.baseUrl || ''} onChange={(e) => save({ [selectedId]: { baseUrl: e.target.value } })} placeholder={preset.baseUrl || 'https://...'} />
-          </label>
-        ) : null}
-
-        <button className="api-advanced-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
-          {showAdvanced ? '▲ 收起高级设置' : '▼ 高级设置'}
-        </button>
-
-        {showAdvanced ? (
-          <div className="api-advanced">
-            {selectedId === 'custom' || preset.baseUrl === '' ? null : (
-              <label className="api-field">
-                Base URL
-                <input value={pcfg?.baseUrl || ''} onChange={(e) => save({ [selectedId]: { baseUrl: e.target.value } })} placeholder={preset.baseUrl} />
-              </label>
-            )}
-            <div className="api-grid">
-              <label className="api-field">
-                Temperature
-                <input type="number" min={0} max={2} step={0.1} value={pcfg?.temperature ?? 0.3} onChange={(e) => save({ [selectedId]: { temperature: Number(e.target.value) } })} />
-              </label>
-              <label className="api-field">
-                Max Tokens
-                <input type="number" min={1} max={32000} value={pcfg?.maxTokens ?? 1200} onChange={(e) => save({ [selectedId]: { maxTokens: Number(e.target.value) } })} />
-              </label>
-              <label className="api-field">
-                Timeout (ms)
-                <input type="number" min={5000} max={300000} value={pcfg?.timeoutMs ?? 60000} onChange={(e) => save({ [selectedId]: { timeoutMs: Number(e.target.value) } })} />
-              </label>
-              <label className="api-field">
-                <label className="mini-switch">
-                  <input type="checkbox" checked={pcfg?.stream !== false} onChange={(e) => save({ [selectedId]: { stream: e.target.checked } })} />
-                  <span>流式输出</span>
-                </label>
-              </label>
+            <div className="api-actions">
+              <button className="primary" onClick={testConnection} disabled={testing}>
+                {testing ? '测试连接中...' : '测试连接'}
+              </button>
+              {testResult ? (
+                <span className={testResult.ok ? 'api-test-ok' : 'api-test-fail'}>
+                  {testResult.ok ? '✓ 连接成功' : ('✗ ' + (testResult.error || '连接失败'))}
+                </span>
+              ) : null}
+              <div className="grow" />
+              {message ? <span className="api-saved">{message}</span> : null}
             </div>
           </div>
-        ) : null}
-
-        <div className="api-actions">
-          <button className="primary" onClick={testConnection} disabled={testing}>
-            {testing ? '测试中...' : '测试连接'}
-          </button>
-          {testResult ? (
-            <span className={testResult.ok ? 'api-test-ok' : 'api-test-fail'}>
-              {testResult.ok ? '✓ 连接成功' : `✗ ${testResult.error}`}
-            </span>
-          ) : null}
-          {message ? <span className="api-saved">{message}</span> : null}
-        </div>
+        </section>
       </div>
     </div>
   )
 }
-
-const skillIconChoices = ['♡', '➤', '▣', '▣', '✎', '◷', '♬', '□', '✉', '♢', '⌖', '↻', '✳', '☼', '☁', '⚡', '♧', '☾', '⌕', '⧉', '🔊', '☷', '译', 'i', '自']
-const toolbarSkillLimit = 5
-
 function isCustomSkill(skill: Skill) {
   if (skill.deletable === false) return false
   return skill.id.startsWith('custom_') || skill.id === 'custom_skill'
 }
 
+const toolbarSkillLimit = 5
+
 function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[]; onSave: (skill: Skill) => void; onDelete: (skillId: string) => void; onReorder: (skillIds: string[]) => void }) {
   const sortedSkills = [...skills].sort((a, b) => a.sortOrder - b.sortOrder)
-  const [displaySkills, setDisplaySkills] = useState<Skill[]>(sortedSkills)
-  const displaySkillsRef = useRef<Skill[]>(sortedSkills)
-  const [expandedId, setExpandedId] = useState(sortedSkills[0]?.id || '')
+  const [menuSkill, setMenuSkill] = useState<Skill | null>(null)
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [editing, setEditing] = useState<Skill | null>(null)
   const [draggingId, setDraggingId] = useState('')
-  const visibleCount = displaySkills.filter((skill) => skill.enabled && skill.showInToolbar).length
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const toolbarSkills = sortedSkills.slice(0, 5)
+  const moreSkills = sortedSkills.slice(5)
 
   useEffect(() => {
-    setDisplaySkills(sortedSkills)
-    displaySkillsRef.current = sortedSkills
-  }, [skills])
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuSkill(null)
+        setMenuPos(null)
+      }
+    }
+    if (menuSkill) {
+      window.addEventListener('mousedown', handleClick)
+      return () => window.removeEventListener('mousedown', handleClick)
+    }
+  }, [menuSkill])
+
+  const openMenu = (e: React.MouseEvent, skill: Skill) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setMenuPos({ x: Math.min(rect.right - 180, window.innerWidth - 200), y: rect.bottom + 4 })
+    setMenuSkill(skill)
+  }
 
   const newSkill = () => {
-    const now = Date.now()
     setEditing({
       ...emptySkill,
-      id: `custom_${now}`,
+      id: 'custom_' + Date.now(),
       name: '新技能',
-      icon: '自',
-      showInToolbar: visibleCount < toolbarSkillLimit,
       sortOrder: 100 + skills.length,
     })
   }
 
-  const toggleToolbar = (skill: Skill) => {
-    if (!skill.showInToolbar && visibleCount >= toolbarSkillLimit) {
-      window.alert(`工具条最多显示 ${toolbarSkillLimit} 个技能，请先隐藏一个技能。`)
-      return
-    }
-    onSave({ ...skill, showInToolbar: !skill.showInToolbar, enabled: true })
+  const handleDragStart = (skillId: string) => setDraggingId(skillId)
+
+  const handleDragOver = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault()
+    if (!draggingId || draggingId === targetId) return
+    const from = sortedSkills.findIndex((s) => s.id === draggingId)
+    const to = sortedSkills.findIndex((s) => s.id === targetId)
+    if (from < 0 || to < 0) return
+    const next = [...sortedSkills]
+    const [item] = next.splice(from, 1)
+    next.splice(to, 0, item)
+    onReorder(next.map((s, i) => ({ ...s, sortOrder: (i + 1) * 10 } as Skill)).map((s) => s.id))
   }
 
-  const deleteSkill = (skill: Skill) => {
-    if (!isCustomSkill(skill)) return
-    if (window.confirm(`确定删除“${skill.name}”吗？`)) onDelete(skill.id)
-  }
+  const handleDragEnd = () => setDraggingId('')
 
-  const moveSkill = (activeId: string, overId: string) => {
-    if (!activeId || !overId || activeId === overId) return
-    setDisplaySkills((current) => {
-      const from = current.findIndex((skill) => skill.id === activeId)
-      const to = current.findIndex((skill) => skill.id === overId)
-      if (from < 0 || to < 0) return current
-      const next = [...current]
-      const [item] = next.splice(from, 1)
-      next.splice(to, 0, item)
-      const reordered = next.map((skill, index) => ({ ...skill, sortOrder: (index + 1) * 10 }))
-      displaySkillsRef.current = reordered
-      return reordered
-    })
-  }
-
-  const saveOrder = () => {
-    if (!draggingId) return
-    setDraggingId('')
-    onReorder(displaySkillsRef.current.map((skill) => skill.id))
+  const renderSkillRow = (skill: Skill) => {
+    const isAI = skill.type !== 'builtin'
+    return (
+      <div
+        key={skill.id}
+        className={'skill-row' + (draggingId === skill.id ? ' dragging' : '')}
+        draggable
+        onDragStart={() => handleDragStart(skill.id)}
+        onDragOver={(e) => handleDragOver(e, skill.id)}
+        onDragEnd={handleDragEnd}
+      >
+        <div className="skill-row-drag">⠿</div>
+        <span className="skill-row-icon"><SkillIcon iconKey={normalizeIconKey(skill.iconKey)} /></span>
+        <div className="skill-row-info">
+          <div className="skill-row-name">{skill.name}</div>
+          <div className="skill-row-desc">{isAI ? 'AI 技能' : '系统内置'} · {skill.outputMode === 'inline' ? '行内输出' : '弹出窗口'}</div>
+        </div>
+        <span className={'pill ' + (isAI ? 'purple' : 'system')}>{isAI ? 'AI 技能' : '系统技能'}</span>
+        <button className="skill-row-more" onClick={(e) => openMenu(e, skill)}>⋯</button>
+      </div>
+    )
   }
 
   return (
-    <section className="skill-manager">
-      <div className="skill-manager-head">
+    <div className="app-page-inner app-page-inner-skills">
+      <div className="page-head">
         <div>
-          <strong>AI 划词工具栏</strong>
-          <span>排列顺序即显示位置。前 5 个显示在划词工具条，拖拽即可调整顺序。</span>
+          <h1 className="h1">划词技能</h1>
+          <div className="sub">自定义工具条按钮、图标和 Prompt。</div>
         </div>
-        <button className="primary" onClick={newSkill}>新建技能</button>
+        <div className="top-actions">
+          <button className="btn primary" onClick={newSkill}>＋ 新建技能</button>
+        </div>
       </div>
 
-      <div className="skill-card-list">
-        {displaySkills.map((skill) => {
-          const expanded = expandedId === skill.id
-          const custom = isCustomSkill(skill)
-          return (
-            <article
-              key={skill.id}
-              draggable
-              className={`${expanded ? 'skill-card-row expanded' : 'skill-card-row'}${draggingId === skill.id ? ' dragging' : ''}`}
-              onDragStart={(event) => {
-                setDraggingId(skill.id)
-                event.dataTransfer.effectAllowed = 'move'
-                event.dataTransfer.setData('text/plain', skill.id)
-              }}
-              onDragOver={(event) => {
-                event.preventDefault()
-                moveSkill(draggingId || event.dataTransfer.getData('text/plain'), skill.id)
-              }}
-              onDrop={(event) => {
-                event.preventDefault()
-                saveOrder()
-              }}
-              onDragEnd={saveOrder}
-            >
-              <button className="skill-card-main" onClick={() => setExpandedId(expanded ? '' : skill.id)}>
-                <span className="drag-dots">⠿</span>
-                <span className="skill-icon">{skill.icon || '•'}</span>
-                <strong>{skill.name}</strong>
-                {!skill.showInToolbar ? <em>在更多菜单中</em> : null}
-              </button>
-              {expanded ? (
-                <div className="skill-card-actions">
-                  <label className="mini-switch">
-                    <input type="checkbox" checked={skill.showInToolbar} onChange={() => toggleToolbar(skill)} />
-                    <span>工具条显示</span>
-                  </label>
-                  <button onClick={() => setEditing({ ...skill })}>编辑</button>
-                  {custom ? <button className="danger-text" onClick={() => deleteSkill(skill)}>删除</button> : null}
-                </div>
-              ) : null}
-            </article>
-          )
-        })}
-      </div>
+      {toolbarSkills.length > 0 ? (
+        <div className="section-card">
+          <div className="section-card-header">
+            <div className="section-card-title">AI 技能</div>
+            <div className="section-card-desc">在划词工具条中显示的技能</div>
+          </div>
+          <div className="skill-rows">{toolbarSkills.map(renderSkillRow)}</div>
+        </div>
+      ) : null}
 
-      {editing ? <SkillEditDialog skill={editing} onChange={setEditing} onClose={() => setEditing(null)} onSave={(skill) => { onSave(skill); setEditing(null) }} /> : null}
-    </section>
+      {moreSkills.length > 0 ? (
+        <div className="section-card">
+          <div className="section-card-header">
+            <div className="section-card-title">更多菜单</div>
+            <div className="section-card-desc">在 "..." 中显示的技能</div>
+          </div>
+          <div className="skill-rows">{moreSkills.map(renderSkillRow)}</div>
+        </div>
+      ) : null}
+
+      {menuSkill && menuPos ? (
+        <div className="skill-menu" ref={menuRef} style={{ left: menuPos.x + 'px', top: menuPos.y + 'px' }}>
+          <div className="skill-menu-item" onClick={() => { setEditing({ ...menuSkill }); setMenuSkill(null) }}>编辑技能</div>
+          {isCustomSkill(menuSkill) ? (
+            <>
+              <div className="skill-menu-item" onClick={() => {
+                const clone: Skill = { ...menuSkill, id: 'custom_' + Date.now(), name: menuSkill.name + ' (副本)', sortOrder: 1000 + skills.length }
+                onSave(clone)
+                setMenuSkill(null)
+              }}>复制为新技能</div>
+              <div className="skill-menu-sep" />
+              <div className="skill-menu-item danger" onClick={() => {
+                if (window.confirm('确定删除技能「' + menuSkill.name + '」吗？')) onDelete(menuSkill.id)
+                setMenuSkill(null)
+              }}>删除技能</div>
+            </>
+          ) : null}
+          <div className="skill-menu-sep" />
+          <div className="skill-menu-item" onClick={() => {
+            const ids = sortedSkills.map((s) => s.id)
+            const fromIdx = ids.indexOf(menuSkill!.id)
+            if (fromIdx > 0) { ids.splice(fromIdx, 1); ids.unshift(menuSkill!.id) }
+            onReorder(ids)
+            setMenuSkill(null)
+          }}>移到最前</div>
+          <div className="skill-menu-item" onClick={() => {
+            const ids = sortedSkills.map((s) => s.id)
+            const fromIdx = ids.indexOf(menuSkill!.id)
+            if (fromIdx >= 0 && fromIdx < 5) { ids.splice(fromIdx, 1); ids.splice(5, 0, menuSkill!.id) }
+            onReorder(ids)
+            setMenuSkill(null)
+          }}>移到更多菜单</div>
+        </div>
+      ) : null}
+
+      {editing ? <SkillEditDialog skill={editing} onChange={setEditing} onClose={() => setEditing(null)} onSave={(s) => { onSave(s); setEditing(null) }} /> : null}
+    </div>
   )
 }
 
@@ -1068,64 +1126,101 @@ function SkillEditDialog({ skill, onChange, onClose, onSave }: { skill: Skill; o
     onSave(skill)
   }
 
-  const useExample = () => {
-    onChange({
-      ...skill,
-      userPrompt: '请围绕下面划选内容给出清晰、实用的中文解释：\n\n{{selection}}\n\n请包含：核心含义、使用场景、注意点。',
-    })
-  }
+  const useExample = (prompt: string) => onChange({ ...skill, userPrompt: prompt })
 
   return (
-    <div className="skill-dialog-backdrop">
-      <motion.div initial={{ opacity: 0, y: 12, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} className="skill-dialog">
-        <header>
-          <strong>编辑技能</strong>
-          <button onClick={onClose}>×</button>
-        </header>
+    <div className="skill-modal-backdrop" onClick={onClose}>
+      <motion.div
+        className="skill-modal"
+        initial={{ opacity: 0, y: 14, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.18 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="skill-modal-header">
+          <div className="skill-modal-title">{custom ? '新建技能' : '编辑技能'}</div>
+          <button className="skill-modal-close" onClick={onClose}>×</button>
+        </div>
 
-        <label className="skill-dialog-label">技能名称和图标 <b>*</b></label>
-        <div className="skill-name-line">
-          <input maxLength={20} value={skill.name} onChange={(event) => onChange({ ...skill, name: event.target.value })} />
-          <span>{nameCount}/20</span>
-          <button className="icon-picker-button" onClick={() => setIconOpen((value) => !value)}>{skill.icon || '•'}</button>
-          {iconOpen ? (
-            <div className="icon-popover">
-              <header><span>图标</span><button onClick={() => setIconOpen(false)}>×</button></header>
-              <div className="icon-grid">
-                {skillIconChoices.map((icon) => (
-                  <button key={icon} className={skill.icon === icon ? 'active' : ''} onClick={() => { onChange({ ...skill, icon }); setIconOpen(false) }}>{icon}</button>
-                ))}
+        <div className="skill-modal-body">
+          <div className="skill-modal-grid">
+            <div className="skill-modal-field">
+              <label>技能名称 <span style={{ color: '#ef4444' }}>*</span></label>
+              <div className="skill-input-wrap">
+                <input maxLength={20} value={skill.name} onChange={(e) => onChange({ ...skill, name: e.target.value })} placeholder="在这里命名你的技能..." />
+                <span className="skill-name-count">{nameCount}/20</span>
               </div>
             </div>
-          ) : null}
+            <div className="skill-modal-field skill-icon-field">
+              <label>图标</label>
+              <button className="skill-icon-trigger" onClick={() => setIconOpen(!iconOpen)} type="button">
+                <SkillIcon iconKey={normalizeIconKey(skill.iconKey)} />
+              </button>
+              {iconOpen ? (
+                <div className="skill-icon-popover" onClick={(e) => e.stopPropagation()}>
+                  <div className="skill-icon-popover-head">
+                    <span>图标</span>
+                    <button className="skill-icon-pop-close" onClick={() => setIconOpen(false)} type="button">×</button>
+                  </div>
+                  <div className="skill-icon-grid">
+                    {SKILL_ICON_KEYS.map((key) => (
+                      <button
+                        key={key}
+                        className={'skill-icon-option' + (skill.iconKey === key ? ' active' : '')}
+                        onClick={() => { onChange({ ...skill, iconKey: key }); setIconOpen(false) }}
+                        type="button"
+                        title={key}
+                      >
+                        <SkillIcon iconKey={key} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="skill-modal-field">
+            <label>提示词内容 <span style={{ color: '#ef4444' }}>*</span></label>
+            <div className="prompt-help">
+              使用特殊字符串 <b>{'{{selection}}'}</b> 代表划选中的文字。点击下面示例可快速填入。
+            </div>
+            <div className="prompt-examples">
+              <button className="prompt-example" onClick={() => useExample('请把下面内容翻译成自然、准确的中文：\n\n{{selection}}')}>翻译成中文</button>
+              <button className="prompt-example" onClick={() => useExample('请用通俗易懂的语言解释下面这段内容：\n\n{{selection}}')}>通俗解释</button>
+              <button className="prompt-example" onClick={() => useExample('请总结下面内容的核心要点，使用简洁的项目符号：\n\n{{selection}}')}>总结要点</button>
+              <button className="prompt-example" onClick={() => useExample('请将下面内容改写成更正式、清晰的学术表达：\n\n{{selection}}')}>学术改写</button>
+            </div>
+          </div>
+
+          <div className="skill-vars">
+            <div className="skill-vars-title">可用变量说明</div>
+            <div className="skill-var-row"><code className="skill-var-token">{'{{selection}}'}</code><span>当前划选文本。新建技能时通常必须包含它。</span></div>
+            <div className="skill-var-row"><code className="skill-var-token">{'{{ai_result}}'}</code><span>上一轮 AI 结果，用于二次改写、整理或导入。</span></div>
+            <div className="skill-var-row"><code className="skill-var-token">{'{{skill_name}}'}</code><span>当前技能名称。</span></div>
+            <div className="skill-var-row"><code className="skill-var-token">{'{{model}}'}</code><span>当前使用的模型名称。</span></div>
+            <div className="skill-var-row"><code className="skill-var-token">{'{{date}}'}</code><span>当前日期。</span></div>
+            <div className="skill-var-row"><code className="skill-var-token">{'{{time}}'}</code><span>当前时间。</span></div>
+          </div>
+
+          <div className="skill-modal-field">
+            <textarea className="skill-prompt-textarea" value={skill.userPrompt} onChange={(e) => onChange({ ...skill, userPrompt: e.target.value })} placeholder="在此输入或粘贴你的提示词。" />
+          </div>
+
+          {error ? <div className="skill-error">{error}</div> : null}
+          {!custom ? <div className="skill-system-note">这是内置技能，可以改名称、图标和提示词，但不能删除。</div> : null}
         </div>
 
-        <label className="skill-dialog-label">提示词内容 <b>*</b></label>
-        <div className="prompt-help">
-          可以直接写“翻译成中文”“解释这句话”，系统会自动把划词内容传给 AI。
-          <span className="prompt-help-more">高级用法：<code>{'{{selection}}'}</code> 或 <code>{'{selection}'}</code> 可指定划词文本插入位置。</span>
-          <button onClick={useExample}>插入示例</button>
-        </div>
-        <textarea className="skill-prompt-box" value={skill.userPrompt} onChange={(event) => onChange({ ...skill, userPrompt: event.target.value })} />
-
-
-
-
-
-
-        {error ? <div className="skill-error">{error}</div> : null}
-        {!custom ? <p className="skill-system-note">这是内置技能，可以改名称、图标和提示词，但不能删除。</p> : null}
-
-        <footer>
-          <button onClick={onClose}>取消</button>
+        <div className="skill-modal-footer">
+          <button className="btn" onClick={onClose}>取消</button>
           <button className="primary" onClick={save}>保存</button>
-        </footer>
+        </div>
       </motion.div>
     </div>
   )
 }
 
-function ObsidianPanel({ settings, onSave, dataDir, templates }: { settings: Settings; onSave: (settings: Settings) => void; dataDir: string; templates: ObsidianTemplate[] }) {
+﻿function ObsidianPanel({ settings, onSave, dataDir, templates }: { settings: Settings; onSave: (settings: Settings) => void; dataDir: string; templates: ObsidianTemplate[] }) {
   const [draft, setDraft] = useState(settings)
   const [localTemplates, setLocalTemplates] = useState<ObsidianTemplate[]>(templates)
   const [selectedId, setSelectedId] = useState<string>(settings.obsidian.activeTemplateId || templates[0]?.id || '')
@@ -1239,121 +1334,140 @@ function ObsidianPanel({ settings, onSave, dataDir, templates }: { settings: Set
   }
 
   return (
-    <section className="panel obsidian-panel">
-      <div className="obsidian-vault-row">
-        <div className="obsidian-label-line">
-          <label>Vault 路径</label>
-          <span className="obsidian-help-tip" tabIndex={0}
-            onMouseEnter={(e) => {
-              const el = e.currentTarget;
-              const pop = el.querySelector(".obsidian-help-popover");
-              if (!pop) return;
-              const rect = el.getBoundingClientRect();
-              const tw = Math.min(360, window.innerWidth - 24);
-              const l = Math.max(8, Math.min(rect.left + rect.width / 2 - tw / 2, window.innerWidth - tw - 8));
-              pop.setAttribute("style", "position:fixed;left:" + l + "px;top:" + (rect.top - 8) + "px;opacity:1;transform:scale(1)");
-            }}
-            onMouseLeave={(e) => {
-              const pop = e.currentTarget.querySelector(".obsidian-help-popover");
-              if (!pop) return;
-              const cur = pop.getAttribute("style") || "";
-              const base = cur.replace(/opacity:[^;]+;?/g, "").replace(/transform:[^;]+;?/g, "");
-              pop.setAttribute("style", base + "opacity:0;transform:scale(0.98)");
-            }}
-            onFocus={(e) => {
-              const el = e.currentTarget;
-              const pop = el.querySelector(".obsidian-help-popover");
-              if (!pop) return;
-              const rect = el.getBoundingClientRect();
-              const tw = Math.min(360, window.innerWidth - 24);
-              const l = Math.max(8, Math.min(rect.left + rect.width / 2 - tw / 2, window.innerWidth - tw - 8));
-              pop.setAttribute("style", "position:fixed;left:" + l + "px;top:" + (rect.top - 8) + "px;opacity:1;transform:scale(1)");
-            }}
-            onBlur={(e) => {
-              const pop = e.currentTarget.querySelector(".obsidian-help-popover");
-              if (!pop) return;
-              const cur = pop.getAttribute("style") || "";
-              const base = cur.replace(/opacity:[^;]+;?/g, "").replace(/transform:[^;]+;?/g, "");
-              pop.setAttribute("style", base + "opacity:0;transform:scale(0.98)");
-            }}>
-            ?
-            <span className="obsidian-help-popover">
-              <strong>Obsidian 导入怎么用？</strong>
-              <span>1. 先填写并保存 Vault 文件夹路径。</span>
-              <span>2. 新建或选择模板，目标笔记必须是 Vault 内已有的 .md 文件。</span>
-              <span>3. 当前选中的模板，会用于结果卡片里的“保存到 Obsidian”。</span>
-              <em>常用变量：{'{{selection}}'} 原文，{'{{ai_result}}'} AI 结果。</em>
-            </span>
-          </span>
-        </div>
-        <div className="row-input">
-          <input value={draft.obsidian.vaultPath} onChange={(e) => setDraft({ ...draft, obsidian: { ...draft.obsidian, vaultPath: e.target.value } })} placeholder="例如 C:\Users\你\Documents\ObsidianVault" />
-          <button className="primary" onClick={handleVaultPathSave}>保存</button>
+    <div className="obsidian-page">
+      <div className="obsidian-head">
+        <div>
+          <h1>Obsidian 导入</h1>
+          <p>把结果直接写入你的 Obsidian vault。</p>
         </div>
       </div>
 
+      <section className="vault-card">
+        <div className="vault-card-head">
+          <div>
+            <h2>Vault 路径</h2>
+            <p>选择你的 Obsidian 仓库根目录。</p>
+          </div>
+        </div>
+        <div className="vault-row">
+          <input className="vault-input" value={draft.obsidian.vaultPath} onChange={(e) => setDraft({ ...draft, obsidian: { ...draft.obsidian, vaultPath: e.target.value } })} placeholder="例如 C:\Users\你\Documents\ObsidianVault" />
+          <button className="browse-btn" onClick={() => {}}>浏览</button>
+          <button className="primary" onClick={handleVaultPathSave}>保存</button>
+        </div>
+      </section>
+
       <div className="obsidian-layout">
-        <aside className="obsidian-list">
-          <button className="primary" onClick={newTemplate}>+ 新建模板</button>
-          {localTemplates.map((tpl) => (
-            <button key={tpl.id} className={selectedId === tpl.id ? 'obsidian-tpl-item active' : 'obsidian-tpl-item'} onClick={() => { void selectTemplate(tpl.id) }}>
-              {tpl.name}
-            </button>
-          ))}
+        <aside className="template-pane">
+          <div className="template-pane-head">
+            <h2>模板</h2>
+            <button className="btn primary" onClick={newTemplate}>+ 新建模板</button>
+          </div>
+          <div className="template-list">
+            {localTemplates.length === 0 ? (
+              <div className="empty">还没有模板</div>
+            ) : (
+              localTemplates.map((tpl) => (
+                <button key={tpl.id} className={'template-item' + (selectedId === tpl.id ? ' active' : '')} onClick={() => { void selectTemplate(tpl.id) }}>
+                  {tpl.name}
+                </button>
+              ))
+            )}
+          </div>
         </aside>
-        <div className="obsidian-editor">
-          {!selected && !editing ? <div className="empty">选择一个模板开始编辑</div> : null}
+
+        <section className="template-editor-card">
+          <div className="template-editor-head">
+            <div>
+              <h2>模板详情</h2>
+              <p>编辑保存路径和 Markdown 模板。</p>
+            </div>
+          </div>
+
+          {!selected && !editing ? (
+            <div className="empty">选择一个模板开始编辑</div>
+          ) : null}
 
           {selected && !editing ? (
-            <div className="obsidian-view">
-              <div className="obsidian-view-field"><label>名称</label><span>{selected.name}</span></div>
-              <div className="obsidian-view-field"><label>状态</label><span>{selectedId === draft.obsidian.activeTemplateId ? '当前使用模板' : '未设为当前模板'}</span></div>
-              <div className="obsidian-view-field"><label>保存方式</label><span>{selected.saveBehavior === 'append_to_existing_note_bottom' ? '追加到末尾' : '追加到开头'}</span></div>
-              <div className="obsidian-view-field"><label>目标笔记</label><span>{selected.targetNotePath || '未设置'}</span></div>
-              <div className="obsidian-view-field"><label>模板预览</label><pre className="obsidian-template-preview">{selected.contentTemplate.slice(0, 200)}{selected.contentTemplate.length > 200 ? '...' : ''}</pre></div>
-              <button onClick={editSelected}>编辑模板</button>
+            <div className="template-form">
+              <div className="form-row">
+                <label>名称</label>
+                <div className="form-value">{selected.name}</div>
+              </div>
+              <div className="form-row">
+                <label>保存方式</label>
+                <div className="form-value">{selected.saveBehavior === 'append_to_existing_note_bottom' ? '追加到末尾' : '追加到开头'}</div>
+              </div>
+              <div className="form-row">
+                <label>目标笔记</label>
+                <div className="form-value">{selected.targetNotePath || '未设置'}</div>
+              </div>
+              <div className="form-row">
+                <label>模板预览</label>
+                <pre className="template-preview">{selected.contentTemplate.slice(0, 200)}{selected.contentTemplate.length > 200 ? '...' : ''}</pre>
+              </div>
+              <div className="obsidian-actions">
+                <button className="btn primary" onClick={editSelected}>编辑模板</button>
+              </div>
             </div>
           ) : null}
 
           {editing ? (
-            <div className="obsidian-edit-form">
-              <label>模板名称<input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="例如：英语学习笔记" /></label>
-              <label>保存行为</label>
-              <div className="obsidian-radio-group">
-                <label><input type="radio" name="saveBehavior" checked={editing.saveBehavior === 'append_to_existing_note_bottom'} onChange={() => setEditing({ ...editing, saveBehavior: 'append_to_existing_note_bottom' })} /> 追加到已有笔记末尾</label>
-                <label><input type="radio" name="saveBehavior" checked={editing.saveBehavior === 'append_to_existing_note_top'} onChange={() => setEditing({ ...editing, saveBehavior: 'append_to_existing_note_top' })} /> 追加到已有笔记开头</label>
+            <div className="template-form">
+              <div className="form-row">
+                <label>模板名称</label>
+                <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="例如：英语学习笔记" />
               </div>
-              <label>目标笔记路径
-                <div className="path-input-row">
+              <div className="form-row">
+                <label>保存方式</label>
+                <div className="radio-group">
+                  <label className="radio-label"><input type="radio" name="saveBehavior" checked={editing.saveBehavior === 'append_to_existing_note_bottom'} onChange={() => setEditing({ ...editing, saveBehavior: 'append_to_existing_note_bottom' })} /> 追加到已有笔记末尾</label>
+                  <label className="radio-label"><input type="radio" name="saveBehavior" checked={editing.saveBehavior === 'append_to_existing_note_top'} onChange={() => setEditing({ ...editing, saveBehavior: 'append_to_existing_note_top' })} /> 追加到已有笔记开头</label>
+                </div>
+              </div>
+              <div className="form-row">
+                <label>目标笔记路径</label>
+                <div className="path-input-wrap">
                   <input value={editing.targetNotePath} onChange={(e) => setEditing({ ...editing, targetNotePath: e.target.value })} placeholder="例如 英语/台词学习.md" />
-                  <button onClick={() => setShowNotePicker(true)}>浏览</button>
+                  <button className="browse-btn" onClick={() => setShowNotePicker(true)}>浏览</button>
                 </div>
-              </label>
-              <label>内容模板
-                <div className="template-vars-hint">
-                  可用变量：<code>{'{{selection}}'}</code> <code>{'{{ai_result}}'}</code> <code>{'{{skill_name}}'}</code> <code>{'{{model}}'}</code> <code>{'{{date}}'}</code> <code>{'{{time}}'}</code> <code>{'{{source_app}}'}</code> <code>{'{{history_space}}'}</code>
-                </div>
-                <textarea className="large template-textarea" value={editing.contentTemplate} onChange={(e) => setEditing({ ...editing, contentTemplate: e.target.value })} placeholder="输入 Markdown 模板..." />
-              </label>
-              <div className="obsidian-edit-actions">
-                <button onClick={doPreview}>预览</button>
-                <button className="primary" onClick={saveTemplate}>保存模板</button>
-                <button className="danger" onClick={deleteTemplate}>删除</button>
               </div>
-              {previewMd ? <div className="obsidian-preview-box"><strong>预览</strong><pre className="obsidian-preview-md">{previewMd}</pre></div> : null}
+              <div className="form-row">
+                <label>变量 token</label>
+                <div className="token-row">
+                  {['{{selection}}', '{{ai_result}}', '{{skill_name}}', '{{model}}', '{{date}}', '{{time}}', '{{source_app}}', '{{history_space}}'].map((t) => (
+                    <span key={t} className="token">{t}</span>
+                  ))}
+                </div>
+              </div>
+              <div className="form-row">
+                <label>内容模板</label>
+                <textarea className="template-textarea" value={editing.contentTemplate} onChange={(e) => setEditing({ ...editing, contentTemplate: e.target.value })} placeholder="输入 Markdown 模板..." />
+              </div>
+
+              <div className="obsidian-actions">
+                <button className="btn primary" onClick={doPreview}>预览</button>
+                <button className="btn primary" onClick={saveTemplate}>保存模板</button>
+                <button className="btn danger" onClick={deleteTemplate}>删除</button>
+              </div>
+
+              {previewMd ? (
+                <div className="preview-box">
+                  <div className="preview-box-label">Markdown 预览</div>
+                  <pre className="preview-content">{previewMd}</pre>
+                </div>
+              ) : null}
               {previewError ? <div className="obsidian-error">{previewError}</div> : null}
             </div>
           ) : null}
-        </div>
+        </section>
       </div>
 
       {message ? <div className="inline-message">{message}</div> : null}
       <p className="subtle">本地数据目录：{dataDir}</p>
       {showNotePicker ? <VaultNotePicker vaultPath={draft.obsidian.vaultPath} onPick={pickedNote} onClose={() => setShowNotePicker(false)} /> : null}
-    </section>
+    </div>
   )
 }
-
 function VaultNotePicker({ vaultPath, onPick, onClose }: { vaultPath: string; onPick: (path: string) => void; onClose: () => void }) {
   const [notes, setNotes] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -1587,9 +1701,6 @@ function ResultView() {
   const runIdRef = useRef('')
   const resultCardRef = useRef<HTMLDivElement>(null)
   const resultDragRef = useRef({ active: false, startX: 0, startY: 0, winX: 0, winY: 0 })
-  const RESIZE_THROTTLE_MS = 100
-  const resizeLastAtRef = useRef(0)
-  const resizePendingRef = useRef<number | null>(null)
 
   useEffect(() => {
     const offReady = window.desktopApi.onResultReady((next) => {
@@ -1611,10 +1722,6 @@ function ResultView() {
       setConfirmSkillId(payload.skillId)
     })
     const offReset = window.desktopApi.onResultReset(() => {
-      if (resizePendingRef.current !== null) {
-        cancelAnimationFrame(resizePendingRef.current)
-        resizePendingRef.current = null
-      }
       runIdRef.current = ''
       setRecord(null)
       setSourceExpanded(false)
@@ -1628,67 +1735,6 @@ function ResultView() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!record || resultDragRef.current.active) return
-    // Cancel any previously scheduled resize
-    if (resizePendingRef.current !== null) {
-      cancelAnimationFrame(resizePendingRef.current)
-      resizePendingRef.current = null
-    }
-    resizePendingRef.current = requestAnimationFrame(() => {
-      resizePendingRef.current = null
-      const now = Date.now()
-      const elapsed = now - resizeLastAtRef.current
-      const isDone = record.status === 'completed' || record.status === 'failed'
-      if (elapsed < RESIZE_THROTTLE_MS && !isDone) {
-        console.log('[Result] resize throttled')
-        return
-      }
-      const card = resultCardRef.current
-      if (!card) return
-      const header = card.querySelector<HTMLElement>('.result-card-header')
-      const content = card.querySelector<HTMLElement>('.result-card-content')
-      const footer = card.querySelector<HTMLElement>('.result-card-footer')
-      const statusLine = card.querySelector<HTMLElement>('.result-status')
-      const contentStyle = content ? window.getComputedStyle(content) : null
-      const contentPadding =
-        (Number.parseFloat(contentStyle?.paddingTop || '0') || 0) +
-        (Number.parseFloat(contentStyle?.paddingBottom || '0') || 0)
-      const childrenHeight = content
-        ? Array.from(content.children).reduce((total, child) => {
-            const element = child as HTMLElement
-            const style = window.getComputedStyle(element)
-            const margin =
-              (Number.parseFloat(style.marginTop || '0') || 0) +
-              (Number.parseFloat(style.marginBottom || '0') || 0)
-            return total + Math.max(element.scrollHeight, element.offsetHeight) + margin
-          }, 0)
-        : 0
-      const contentHeight = contentPadding + childrenHeight
-      const chromeHeight =
-        (header?.offsetHeight || 0) +
-        (footer?.offsetHeight || 0) +
-        (statusLine?.offsetHeight || 0)
-      const desiredHeight = Math.ceil(chromeHeight + contentHeight + 8)
-      window.desktopApi.resizeResultBox({ width: 444, height: desiredHeight })
-      resizeLastAtRef.current = Date.now()
-    })
-    return () => {
-      if (resizePendingRef.current !== null) {
-        cancelAnimationFrame(resizePendingRef.current)
-        resizePendingRef.current = null
-      }
-    }
-  }, [
-    record?.id,
-    record?.answerMarkdown,
-    record?.status,
-    record?.pronunciationData,
-    sourceExpanded,
-    footerMoreOpen,
-    status,
-    confirmText,
-  ])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1955,4 +2001,7 @@ function normalizeMarkdownText(text: string) {
 
 function MarkdownView({ text }: { text: string }) {
   return <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdownText(text)}</ReactMarkdown></div>
+}
+function normalizeIconKey(iconKey: string | undefined): string {
+  return SKILL_ICON_KEYS.includes(iconKey as any) ? iconKey! : 'spark'
 }

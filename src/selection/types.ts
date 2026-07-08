@@ -65,7 +65,7 @@ export interface SelectionReadyPayload {
 export interface Skill {
   id: string;
   name: string;
-  icon: string;
+  iconKey: string;
   enabled: boolean;
   showInToolbar: boolean;
   systemPrompt: string;

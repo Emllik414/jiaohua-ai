@@ -1,5 +1,5 @@
-import type { ToolbarSkill } from './actionRegistry'
-import { displaySkillLabel } from './actionRegistry'
+﻿import type { ToolbarSkill } from './actionRegistry'
+import { SkillIcon } from '../components/SkillIcon'
 import './toolbar.css'
 
 type MoreMenuProps = {
@@ -17,7 +17,6 @@ export function MoreMenu({
   busySkill,
   open,
   onRunSkill,
-  onSettings,
   onPointerEnter,
   onPointerLeave,
 }: MoreMenuProps) {
@@ -27,15 +26,28 @@ export function MoreMenu({
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
     >
-      <div className="more-menu">
-        {skills.map((skill) => (
-          <button key={skill.id} className="more-menu-item" onClick={() => onRunSkill(skill.id)} disabled={Boolean(busySkill)}>
-            <span className="toolbar-button-icon">{skill.icon}</span>
-            {displaySkillLabel(skill)}
-          </button>
-        ))}
-        {skills.length ? <div className="more-menu-separator" /> : null}
-        <button className="more-menu-item" onClick={onSettings}>自定义设置</button>
+      <div className="more-menu-panel">
+        <div className="more-menu-list">
+          {skills.map((skill) => (
+            <button
+              key={skill.id}
+              className="more-menu-item"
+              onClick={() => onRunSkill(skill.id)}
+              disabled={Boolean(busySkill)}
+            >
+              <span className="more-menu-icon">
+                <SkillIcon iconKey={skill.iconKey || 'spark'} />
+              </span>
+              <span className="more-menu-name">{skill.name}</span>
+              <span className={'more-menu-badge ' + (skill.type === 'builtin' ? 'system' : 'ai')}>
+                {skill.type === 'builtin' ? '系统' : 'AI'}
+              </span>
+            </button>
+          ))}
+          {skills.length === 0 ? (
+            <div className="more-menu-empty">没有更多技能</div>
+          ) : null}
+        </div>
       </div>
     </div>
   )

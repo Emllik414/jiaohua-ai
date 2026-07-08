@@ -1,5 +1,6 @@
-import { Fragment, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
+import { Fragment, useRef, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
 import type { ToolbarAction } from './actionRegistry'
+import { SkillIcon } from '../components/SkillIcon'
 import './toolbar.css'
 
 type ToolbarProps = {
@@ -24,11 +25,22 @@ export function Toolbar({
   toolbarRef,
   shellRef,
   onRunSkill,
-  onMore,
   onGripDown,
   onPointerEnter,
   onPointerLeave,
 }: ToolbarProps) {
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+
+  const handleMoreClick = (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    const rect = moreBtnRef.current?.getBoundingClientRect();
+    if (rect) {
+      (window.desktopApi as any).toggleToolbarMore({ x: rect.left, y: rect.top, width: rect.width, height: rect.height });
+    } else {
+      (window.desktopApi as any).toggleToolbarMore();
+    }
+  };
+
   return (
     <div
       ref={shellRef}
@@ -36,19 +48,24 @@ export function Toolbar({
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
     >
-      <div ref={toolbarRef} className="selection-toolbar" onMouseDown={onGripDown} title="按住空白处拖动">
+      <div ref={toolbarRef} className="toolbar-shell">
+        <button className="drag-handle" onMouseDown={onGripDown} title="拖拽">
+          <svg viewBox="0 0 12 18" width="14" height="18"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/><circle cx="3" cy="15" r="1.4"/><circle cx="9" cy="15" r="1.4"/></svg>
+        </button>
         {actions.map((action) => {
           if (action.kind === 'more') {
             return (
               <Fragment key={action.id}>
-                <span className="toolbar-separator" aria-hidden="true" />
+                <span className="toolbar-separator" />
                 <button
-                  className={'toolbar-button more-button' + (moreOpen ? ' is-active' : '')}
+                  ref={moreBtnRef}
+                  className={'tool-btn' + (moreOpen ? ' active' : '')}
                   aria-label={action.label}
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onClick={onMore}
+                  title={action.label}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={handleMoreClick}
                 >
-                  <span className="toolbar-button-icon" dangerouslySetInnerHTML={{ __html: action.icon }} />
+                  <SkillIcon iconKey={action.iconKey} />
                 </button>
               </Fragment>
             )
@@ -56,13 +73,13 @@ export function Toolbar({
           return (
             <button
               key={action.id}
-              className="toolbar-button"
-              onMouseDown={(event) => event.stopPropagation()}
+              className="tool-btn"
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={() => onRunSkill(action.id)}
               disabled={Boolean(busySkill)}
+              title={action.skill ? action.skill.name : action.label}
             >
-              <span className="toolbar-button-icon">{action.icon}</span>
-              <span className="toolbar-button-label">{busySkill === action.id ? '处理中' : action.label}</span>
+              <SkillIcon iconKey={action.iconKey} />
             </button>
           )
         })}

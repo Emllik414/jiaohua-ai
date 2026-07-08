@@ -141,6 +141,7 @@ let tray;
 let currentSelection = '';
 let currentPickedInfo = null;  // PickedInfo from SelectionEngine
 let currentAnchorRect = null;
+let toolbarMoreAnchor = null;
 let currentFloatingSide = 'below';
 let resultFloatingSide = null;
 let lastSelectionRect = null;
@@ -153,6 +154,8 @@ let resultPointerInside = false;
 let toolbarExpanded = false;
 let toolbarInteractionUntil = 0;
 let resultInteractionUntil = 0;
+let pendingResultTargetHeight = null;
+let resultResizeTimer = null;
 let overlayState = 'idle';
 let currentRunId = null;
 let currentAbortController = null;
@@ -197,16 +200,16 @@ function applyHotkeyConfig(config) {
   }
 }
 
-const RESULT_FIXED_WIDTH = 444;
-const RESULT_DEFAULT_HEIGHT = 292;
-const RESULT_MIN_HEIGHT = 220;
+const RESULT_FIXED_WIDTH = 380;
+const RESULT_DEFAULT_HEIGHT = 360;
+const RESULT_MIN_HEIGHT = 300;
 const RESULT_MAX_HEIGHT = 640;
 const TOOLBAR_DEFAULT_WIDTH = 620;
 const TOOLBAR_MIN_WIDTH = 1;
 const TOOLBAR_MAX_WIDTH = 900;
-const TOOLBAR_FIXED_HEIGHT = 78;
-const TOOLBAR_MORE_FIXED_WIDTH = 218;
-const TOOLBAR_MORE_FIXED_HEIGHT = 260;
+const TOOLBAR_FIXED_HEIGHT = 52;
+const TOOLBAR_MORE_FIXED_WIDTH = 190;
+const TOOLBAR_MORE_FIXED_HEIGHT = 180;
 let toolbarFixedWidth = TOOLBAR_DEFAULT_WIDTH;
 let currentResultHeight = RESULT_DEFAULT_HEIGHT;
 
@@ -251,6 +254,7 @@ const defaultSkills = [
     id: 'copy',
     name: '复制',
     icon: '📋',
+    iconKey: 'copy',
     enabled: true,
     showInToolbar: true,
     systemPrompt: '',
@@ -265,6 +269,7 @@ const defaultSkills = [
     id: 'smart_translate',
     name: '<翻译>',
     icon: '◇',
+    iconKey: 'translate',
     enabled: true,
     showInToolbar: true,
     systemPrompt: '你是专业翻译助手。请始终用中文说明。',
@@ -276,6 +281,7 @@ const defaultSkills = [
     id: 'translate',
     name: '翻译',
     icon: '译',
+    iconKey: 'translate',
     enabled: true,
     showInToolbar: true,
     systemPrompt: '你是专业翻译助手。请用中文回答。',
@@ -287,6 +293,7 @@ const defaultSkills = [
     id: 'explain',
     name: '解释',
     icon: 'i',
+    iconKey: 'chat',
     enabled: true,
     showInToolbar: true,
     systemPrompt: '你是擅长解释概念的中文 AI 助手。',
@@ -298,6 +305,7 @@ const defaultSkills = [
     id: 'summarize',
     name: '总结',
     icon: '≡',
+    iconKey: 'list',
     enabled: true,
     showInToolbar: true,
     systemPrompt: '你是中文阅读总结助手。',
@@ -309,6 +317,7 @@ const defaultSkills = [
     id: 'xiaohongshu',
     name: '小红书',
     icon: '书',
+    iconKey: 'heart',
     enabled: true,
     showInToolbar: true,
     systemPrompt: '你是中文新媒体写作助手。',
@@ -320,6 +329,7 @@ const defaultSkills = [
     id: 'pronunciation',
     name: '发音',
     icon: '♪',
+    iconKey: 'speaker',
     enabled: true,
     showInToolbar: true,
     systemPrompt: '你是英语发音和词汇教学助手。请用中文解释。',
@@ -332,6 +342,35 @@ const defaultSkills = [
   },
 ];
 
+
+/**
+ * 兼容旧 skills 没有 iconKey 字段：根据 id/name/旧 icon 推断 iconKey
+ */
+function getIconKeyFromLegacy(skillId, skillName, oldIcon) {
+  const id = String(skillId || '').toLowerCase().trim();
+  const name = String(skillName || '').toLowerCase().trim();
+  const idMap = {
+    'copy': 'copy',
+    'smart_translate': 'translate',
+    'translate': 'translate',
+    'explain': 'chat',
+    'lookup': 'search',
+    'dictionary': 'search',
+    'summarize': 'list',
+    'summary': 'list',
+    'xiaohongshu': 'heart',
+    'obsidian': 'obsidian',
+    'import_obsidian': 'obsidian',
+    'pronunciation': 'speaker',
+    'speak': 'speaker',
+    'read': 'book',
+  };
+  if (idMap[id]) return idMap[id];
+  for (const [key, val] of Object.entries(idMap)) {
+    if (name.includes(key)) return val;
+  }
+  return 'spark';
+}
 function dataDir() {
   const dir = path.join(app.getPath('userData'), 'data');
   fs.mkdirSync(dir, { recursive: true });
@@ -440,6 +479,11 @@ function readStore() {
             parsed_skills.push(def);
           }
         }
+        parsed_skills.forEach(function(s) {
+          if (!s.iconKey) {
+            s.iconKey = getIconKeyFromLegacy(s.id, s.name, s.icon);
+          }
+        });
         return parsed_skills;
       })(),
       history: Array.isArray(parsed.history) ? parsed.history : [],
@@ -800,28 +844,63 @@ function placeResultNearSelection() {
   resultWindow.setBounds({ x: positioned.x, y: positioned.y, width, height }, false);
 }
 
+function pumpResultResize() {
+  if (!resultWindow || resultWindow.isDestroyed()) return;
+  if (resultResizeTimer) return;
+  resultResizeTimer = setTimeout(() => {
+    resultResizeTimer = null;
+    const bounds = resultWindow.getBounds();
+    const curH = bounds.height;
+    const targetHeight = pendingResultTargetHeight;
+    if (!targetHeight) return;
+    const display = screen.getDisplayMatching(bounds);
+    const wa = display.workArea;
+    const margin = 12;
+    let nextHeight = targetHeight;
+    if (targetHeight > curH) {
+      nextHeight = Math.min(curH + 48, targetHeight);
+    } else {
+      if (curH - targetHeight < 32) { pendingResultTargetHeight = null; return; }
+      nextHeight = targetHeight;
+    }
+    if (nextHeight > wa.height - margin * 2) nextHeight = wa.height - margin * 2;
+    const curBottom = bounds.y + curH;
+    const spaceBelow = (wa.y + wa.height - margin) - curBottom;
+    const spaceAbove = bounds.y - (wa.y + margin);
+    const extraNeeded = Math.max(0, nextHeight - curH);
+    let nextY = bounds.y;
+    if (nextHeight > curH) {
+      if (spaceBelow < extraNeeded && spaceAbove >= extraNeeded) {
+        nextY = curBottom - nextHeight;
+      }
+    }
+    if (nextY < wa.y + margin) nextY = wa.y + margin;
+    if (nextY + nextHeight > wa.y + wa.height - margin) {
+      nextHeight = wa.y + wa.height - margin - nextY;
+    }
+    const clamped = clampWindowToWorkArea(bounds.x, nextY, RESULT_FIXED_WIDTH, nextHeight, wa, 8);
+    resultWindow.setBounds({ x: clamped.x, y: clamped.y, width: RESULT_FIXED_WIDTH, height: nextHeight }, true);
+    currentResultHeight = nextHeight;
+      const after = resultWindow.getBounds();
+    if (Math.abs(after.height - targetHeight) >= 8) {
+      if (after.height === curH) return;
+      pumpResultResize();
+    }
+  }, 16);
+}
+
 function resizeResultWindowHeight(desiredHeight) {
   if (!resultWindow || resultWindow.isDestroyed()) return { ok: false };
   const bounds = resultWindow.getBounds();
-  const anchorRect = getSelectionAnchorRect();
-  const display = anchorRect
-    ? screen.getDisplayNearestPoint({ x: anchorRect.x + anchorRect.width / 2, y: anchorRect.y + anchorRect.height / 2 })
-    : screen.getDisplayNearestPoint({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 });
+  const display = screen.getDisplayMatching(bounds);
+  const wa = display.workArea;
+  const margin = 12;
   const desired = Math.ceil(Number(desiredHeight) || RESULT_DEFAULT_HEIGHT);
-  const sideLimit = anchorRect ? getSelectionSideHeightLimit(anchorRect, display.workArea, 8, 8, desired) : display.workArea.height - 48;
-  const maxHeight = Math.max(RESULT_MIN_HEIGHT, Math.min(RESULT_MAX_HEIGHT, sideLimit));
-  const nextHeight = clamp(desired, RESULT_MIN_HEIGHT, maxHeight);
-  currentResultHeight = nextHeight;
-  console.log('result resize height', { desiredHeight, nextHeight, sideLimit, maxHeight });
-
-  if (resultPositionMode === 'auto' && anchorRect) {
-    placeResultNearSelection();
-    return { ok: true, width: RESULT_FIXED_WIDTH, height: nextHeight };
-  }
-
-  const clamped = clampWindowToWorkArea(bounds.x, bounds.y, RESULT_FIXED_WIDTH, nextHeight, display.workArea, 4);
-  resultWindow.setBounds({ x: clamped.x, y: clamped.y, width: RESULT_FIXED_WIDTH, height: nextHeight }, true);
-  return { ok: true, width: RESULT_FIXED_WIDTH, height: nextHeight };
+  const maxHeight = Math.min(RESULT_MAX_HEIGHT, wa.height - margin * 2);
+  const targetHeight = clamp(desired, RESULT_MIN_HEIGHT, maxHeight);
+  pendingResultTargetHeight = targetHeight;
+  if (!resultResizeTimer) pumpResultResize();
+  return { ok: true, width: RESULT_FIXED_WIDTH, height: bounds.height };
 }
 
 function getSelectionSideHeightLimit(anchorRect, workArea, gap = 8, margin = 8, desiredHeight = RESULT_DEFAULT_HEIGHT) {
@@ -845,14 +924,39 @@ function placeToolbarMoreNearToolbar() {
     x: toolbarBounds.x + toolbarBounds.width / 2,
     y: toolbarBounds.y + toolbarBounds.height / 2,
   });
-  let x = toolbarBounds.x + toolbarBounds.width - width;
-  let y = toolbarBounds.y + TOOLBAR_FIXED_HEIGHT + 8;
-  if (y + height > display.workArea.y + display.workArea.height - 8) {
-    y = toolbarBounds.y - height - 8;
+  const wa = display.workArea;
+  const gap = 2;
+  const spaceBelow = (wa.y + wa.height) - (toolbarBounds.y + toolbarBounds.height);
+  const spaceAbove = toolbarBounds.y - wa.y;
+  let placement = 'below';
+  let x, y;
+
+  if (toolbarMoreAnchor) {
+    const btnScreenX = toolbarBounds.x + toolbarMoreAnchor.x;
+    x = btnScreenX + toolbarMoreAnchor.width - width;
+    toolbarMoreAnchor = null;
+  } else {
+    x = toolbarBounds.x + toolbarBounds.width - width;
   }
-  const clamped = clampWindowToWorkArea(x, y, width, height, display.workArea, 8);
-  toolbarMoreWindow.setBounds({ x: clamped.x, y: clamped.y, width, height }, false);
+  x = Math.max(wa.x + gap, Math.min(x, wa.x + wa.width - width - gap));
+
+  if (spaceBelow >= height + gap) {
+    y = toolbarBounds.y + toolbarBounds.height + gap;
+    placement = 'below';
+  } else if (spaceAbove >= height + gap) {
+    y = toolbarBounds.y - height - gap;
+    placement = 'above';
+  } else {
+    y = toolbarBounds.y + toolbarBounds.height + gap;
+    placement = 'fallback';
+  }
+  y = Math.max(wa.y + gap, Math.min(y, wa.y + wa.height - height - gap));
+
+  console.log('[MoreMenu position]', JSON.stringify({ toolbarBounds, width, height, gap, spaceAbove, spaceBelow, placement, finalX: x, finalY: y }));
+  console.log('[MoreMenu size check]', JSON.stringify({ windowBoundsBefore: {}, menuWidth: width, menuHeight: height, placement, finalX: x, finalY: y, windowBoundsAfter: {} }));
+  toolbarMoreWindow.setBounds({ x, y, width, height }, false);
 }
+
 
 /* ───── 发音词典 ───── */
 
@@ -2204,6 +2308,11 @@ ipcMain.handle('skill:run', async (_event, { skillId, selection }) => {
     return runPronunciationSkill(skill, selectedText);
   }
 
+  if (skill.type === 'builtin' && skill.builtinAction === 'copy') {
+    clipboard.writeText(selectedText);
+    return { ok: true };
+  }
+
   if (skill.outputMode === 'copy') {
     clipboard.writeText(selectedText);
     return { copied: true };
@@ -2418,7 +2527,7 @@ ipcMain.handle('toolbar:resize', (_event, expanded) => {
   resizeToolbar(Boolean(expanded));
   return { ok: true };
 });
-ipcMain.handle('toolbar-more:toggle', () => toggleToolbarMore());
+ipcMain.handle('toolbar-more:toggle', (_event, anchor) => { console.log('[main toggle] anchor received:', JSON.stringify(anchor)); toolbarMoreAnchor = anchor || null; return toggleToolbarMore(); });
 ipcMain.handle('toolbar-more:hide', () => hideToolbarMore());
 ipcMain.handle('toolbar-more:pointer-inside', (_event, inside) => {
   toolbarMorePointerInside = Boolean(inside);
@@ -2626,3 +2735,4 @@ app.on('before-quit', () => {
   stopSelectionHelper();
   stopSpeak();
 });
+

@@ -34,7 +34,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   closeCurrent: () => ipcRenderer.invoke('window:close-current'),
   hideToolbar: () => ipcRenderer.invoke('toolbar:hide'),
   resizeToolbar: (expanded) => ipcRenderer.invoke('toolbar:resize', expanded),
-  toggleToolbarMore: () => ipcRenderer.invoke('toolbar-more:toggle'),
+  toggleToolbarMore: (anchor) => ipcRenderer.invoke('toolbar-more:toggle', anchor),
   hideToolbarMore: () => ipcRenderer.invoke('toolbar-more:hide'),
   getToolbarBounds: () => ipcRenderer.invoke('toolbar:get-bounds'),
   setToolbarSize: (size) => ipcRenderer.invoke('toolbar:set-size', size),
