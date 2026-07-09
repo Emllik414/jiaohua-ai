@@ -23,6 +23,14 @@ const PERF_LOGGING = true;  // toggle all [PERF] logs; set false for production
 
 const ENABLE_CLIPBOARD_HARD_WINNER = true;  // allow Clipboard to be hard winner in desktop race
 
+// Clipboard V2 uses a native Win32 helper instead of PowerShell SendKeys.
+// Set to false only for emergency rollback.
+const USE_CLIPBOARD_V2 = true;
+const CLIPBOARD_V2_TIMEOUT_MS = 650;
+// Stopgap UIA timeout: PowerShell UIA is only a secondary helper now.
+// Keep it short so it cannot drag Clipboard V2 selections to ~700ms.
+const WINDOWS_UIA_TIMEOUT_MS = 320;
+
 // ─── Types ────────────────────────────────────────────
 
 /**
@@ -229,30 +237,33 @@ class WindowsUIAProvider extends SelectionProvider {
     const _aid = context?._perfAttemptId || '';
     const pn = String(context?.foregroundProcessName || "").toLowerCase();
     const title = String(context?.foregroundWindowTitle || "").toLowerCase();
+
     if (!this._enabled) {
       console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'disabled' }));
       return false;
     }
-    if (pn.includes("obsidian")) {
-      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'obsidian_skipped' }));
+
+    // Terminal safety: never start a UIA+Clipboard race for terminal windows.
+    // In a terminal, Clipboard V2 must not send Ctrl+C because it can interrupt npm/electron.
+    if (isTerminalLikeContext(context)) {
+      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'terminal_skipped' }));
       return false;
     }
-    if (pn.includes("codex")) {
-      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'codex_skipped' }));
+
+    // These apps are better handled by BrowserProvider or Clipboard V2.
+    // The current PowerShell UIA path is slow to cold-start and usually returns invalid here.
+    if (isFastClipboardPreferredContext(context)) {
+      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'clipboard_v2_preferred' }));
       return false;
     }
-    // 浏览器网页文本不走 UIA；BrowserProvider 未命中时直接进入 ClipboardProvider，节约约 685ms
-    if (pn && /(chrome|msedge|firefox|brave|opera|browser)/.test(pn)) {
-      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'browser_skipped' }));
-      return false;
-    }
+
     console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: true, reason: 'allowed' }));
     return true;
   }
 
   async pick(context) {
     const startTime = Date.now();
-    const timeout = 650;
+    const timeout = WINDOWS_UIA_TIMEOUT_MS;
 
     try {
       const start = context.rawCursorStart || context.cursorStart || {};
@@ -574,6 +585,222 @@ try {
   }
 }
 
+
+class ClipboardProviderV2 extends SelectionProvider {
+  get name() { return 'clipboard-v2'; }
+  get priority() { return 89; }
+
+  constructor(helperPath) {
+    super();
+    this._helperPath = helperPath || resolveClipboardHelperPath();
+    this._enabled = process.platform === 'win32';
+  }
+
+  canHandle(context) {
+    if (!this._enabled) return false;
+
+    // Safety: do not send Ctrl+C into terminals. In Windows Terminal / cmd /
+    // PowerShell, Ctrl+C means "interrupt process", not "copy selection".
+    if (isTerminalLikeContext(context)) {
+      const attemptId = context?._perfAttemptId || '';
+      console.log('[ClipboardV2] skip_terminal', JSON.stringify({
+        attemptId,
+        processName: context?.foregroundProcessName || '',
+        windowTitle: context?.foregroundWindowTitle || ''
+      }));
+      return false;
+    }
+
+    return true;
+  }
+
+  async pick(context = {}) {
+    const attemptId = context?._perfAttemptId || '';
+    const startedAt = Date.now();
+    console.log('[ClipboardV2] request_start', JSON.stringify({ attemptId, at: startedAt }));
+
+    const helperPath = this._helperPath;
+    const helperExists = safeExists(helperPath);
+    console.log('[ClipboardV2] sequence_before', JSON.stringify({ attemptId, at: Date.now(), helperPath, exists: helperExists }));
+
+    if (!helperExists) {
+      const latency = Date.now() - startedAt;
+      console.log('[ClipboardV2] helper_failed', JSON.stringify({
+        attemptId,
+        helperPath,
+        exists: false,
+        cwd: process.cwd(),
+        duration: latency,
+        errorMessage: 'clipboard-helper.exe not found',
+        stdoutPreview: '',
+        stderrPreview: '',
+        parseError: ''
+      }));
+      return makeInvalidClipboardV2Result('helper_not_found', latency, { helperPath, exists: false });
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let execError = null;
+    try {
+      const out = await execFileCapture(helperPath, [], CLIPBOARD_V2_TIMEOUT_MS);
+      stdout = out.stdout || '';
+      stderr = out.stderr || '';
+      execError = out.error || null;
+    } catch (err) {
+      execError = err;
+      stdout = err?.stdout || '';
+      stderr = err?.stderr || '';
+    }
+
+    const duration = Date.now() - startedAt;
+
+    let data = null;
+    let parseError = null;
+    const rawStdout = String(stdout || '').trim();
+    try {
+      if (rawStdout) data = JSON.parse(rawStdout);
+    } catch (err) {
+      parseError = err;
+    }
+
+    // Important: execFile reports an error when the helper exits with a non-zero code,
+    // even if stdout already contains valid JSON. Prefer valid JSON because it is the
+    // helper's structured result. Only treat execError as fatal when JSON is absent.
+    if (!data && execError) {
+      console.log('[ClipboardV2] helper_failed', JSON.stringify({
+        attemptId,
+        helperPath,
+        exists: helperExists,
+        cwd: process.cwd(),
+        duration,
+        errorMessage: execError?.message || '',
+        errorCode: execError?.code || '',
+        signal: execError?.signal || '',
+        stdoutPreview: String(stdout || '').slice(0, 1000),
+        stderrPreview: String(stderr || '').slice(0, 1000),
+        parseError: parseError?.message || ''
+      }));
+      return makeInvalidClipboardV2Result('helper_exec_failed', duration, { helperPath, stdout, stderr, execError: execError?.message || '' });
+    }
+
+    if (!data || parseError) {
+      console.log('[ClipboardV2] helper_failed', JSON.stringify({
+        attemptId,
+        helperPath,
+        exists: helperExists,
+        cwd: process.cwd(),
+        duration,
+        errorMessage: execError?.message || '',
+        errorCode: execError?.code || '',
+        signal: execError?.signal || '',
+        stdoutPreview: String(stdout || '').slice(0, 1000),
+        stderrPreview: String(stderr || '').slice(0, 1000),
+        parseError: parseError?.message || 'empty helper output'
+      }));
+      return makeInvalidClipboardV2Result('helper_json_parse_failed', duration, { helperPath, stdout, stderr, parseError: parseError?.message || '' });
+    }
+
+    const text = String(data.text || '').trim();
+    const changed = data.changed === true;
+    const previousText = String(data.previousText || '');
+    const sequenceBefore = Number(data.sequenceBefore || 0);
+    const sequenceAfter = Number(data.sequenceAfter || 0);
+    const helperDuration = Number(data.durationMs || data.latency || duration);
+    const timings = data.timings || {};
+    const pollTimeMs = Number(data.pollTimeMs || timings.pollMs || 0);
+
+    console.log('[ClipboardV2] sendinput_done', JSON.stringify({
+      attemptId,
+      changed,
+      pollTimeMs,
+      textLen: text.length,
+      sequenceBefore,
+      sequenceAfter,
+      durationMs: helperDuration,
+      error: data.error || ''
+    }));
+
+    if (!data.ok || !changed) {
+      console.log('[ClipboardV2] clipboard_not_changed', JSON.stringify({
+        attemptId,
+        changed,
+        sequenceBefore,
+        sequenceAfter,
+        pollTimeMs,
+        durationMs: helperDuration,
+        error: data.error || 'clipboard_not_changed'
+      }));
+      return makeInvalidClipboardV2Result(data.error || 'clipboard_not_changed', duration, { data });
+    }
+
+    if (!text) {
+      console.log('[ClipboardV2] invalid_result', JSON.stringify({ attemptId, reason: 'empty_text', durationMs: helperDuration }));
+      return makeInvalidClipboardV2Result('empty_text', duration, { data });
+    }
+
+    const sameAsPrevious = !!(previousText && text === previousText.trim());
+    const previousFragment = isLikelyPreviousClipboardFragment(text, previousText);
+    if (sameAsPrevious || previousFragment) {
+      // Do not hard-block this when the OS sequence number changed. The user may
+      // legitimately select the same text twice. Keep the flags for scoring/debug.
+      console.log('[ClipboardV2] previous_text_match', JSON.stringify({
+        attemptId,
+        sameAsPrevious,
+        previousFragment,
+        durationMs: helperDuration,
+        textLen: text.length
+      }));
+    }
+
+    if (text.length > 3000) {
+      console.log('[ClipboardV2] invalid_result', JSON.stringify({ attemptId, reason: 'too_long_without_rect', durationMs: helperDuration, textLen: text.length }));
+      return makeInvalidClipboardV2Result('too_long_without_rect', duration, { data });
+    }
+
+    const confidence = calculateClipboardV2Confidence(text, context);
+    if (confidence < 0.5) {
+      console.log('[ClipboardV2] invalid_result', JSON.stringify({ attemptId, reason: 'low_confidence', confidence, durationMs: helperDuration, textLen: text.length }));
+      return makeInvalidClipboardV2Result('low_confidence', duration, { data, confidence });
+    }
+
+    console.log('[ClipboardV2] valid_result', JSON.stringify({
+      attemptId,
+      textLen: text.length,
+      confidence,
+      pollTimeMs,
+      durationMs: helperDuration,
+      sequenceBefore,
+      sequenceAfter
+    }));
+
+    return {
+      text,
+      fullText: text,
+      // Keep source as clipboard so existing scoring / toolbar code remains compatible.
+      source: 'clipboard',
+      confidence,
+      rect: null,
+      latency: duration,
+      metadata: {
+        method: 'clipboard-v2-sendinput-sequence',
+        clipboardProvider: 'clipboard-v2',
+        clipboardChanged: true,
+        changed: true,
+        sequenceBefore,
+        sequenceAfter,
+        pollTimeMs,
+        durationMs: helperDuration,
+        timings,
+        previousTextPreview: String(previousText || '').slice(0, 80),
+        sameAsPrevious,
+        previousFragment,
+        error: ''
+      }
+    };
+  }
+}
+
 class ClipboardProvider extends SelectionProvider {
   get name() { return 'clipboard'; }
   get priority() { return 90; }
@@ -695,6 +922,128 @@ function simulateCtrlC() {
     );
   });
 }
+
+function resolveClipboardHelperPath() {
+  const candidates = [];
+  try {
+    if (process.resourcesPath) {
+      candidates.push(path.join(process.resourcesPath, 'tools', 'clipboard-helper.exe'));
+      candidates.push(path.join(process.resourcesPath, 'clipboard-helper.exe'));
+    }
+  } catch (_) {}
+  candidates.push(path.join(__dirname, '..', 'tools', 'clipboard-helper.exe'));
+  candidates.push(path.join(process.cwd(), 'tools', 'clipboard-helper.exe'));
+  for (const candidate of candidates) {
+    try { if (fs.existsSync(candidate)) return candidate; } catch (_) {}
+  }
+  return candidates[candidates.length - 1];
+}
+
+function safeExists(filePath) {
+  try { return !!filePath && fs.existsSync(filePath); } catch (_) { return false; }
+}
+
+function isTerminalLikeContext(context) {
+  const pn = String(context?.foregroundProcessName || '').toLowerCase();
+  const title = String(context?.foregroundWindowTitle || '').toLowerCase();
+  const app = String(context?.appName || '').toLowerCase();
+  const joined = `${pn} ${title} ${app}`;
+
+  return (
+    pn.includes('windowsterminal') ||
+    pn === 'cmd' ||
+    pn === 'cmd.exe' ||
+    pn.includes('powershell') ||
+    pn === 'pwsh' ||
+    pn === 'pwsh.exe' ||
+    pn.includes('conhost') ||
+    joined.includes('cmd.exe') ||
+    joined.includes('powershell') ||
+    joined.includes('windows powershell') ||
+    joined.includes('terminal')
+  );
+}
+
+function isFastClipboardPreferredContext(context) {
+  const pn = String(context?.foregroundProcessName || '').toLowerCase();
+  const title = String(context?.foregroundWindowTitle || '').toLowerCase();
+  const app = String(context?.appName || '').toLowerCase();
+  const joined = `${pn} ${title} ${app}`;
+
+  // Browser/web content should remain on BrowserProvider; desktop browser edge cases use Clipboard V2.
+  if (/(chrome|msedge|firefox|brave|opera|browser)/.test(joined)) return true;
+
+  // Electron / code-editor apps: UIA usually cannot access real selected text and only delays the result.
+  if (/(obsidian|codex|electron|visual studio code|vscode|\bcode\b|notion|slack|discord)/.test(joined)) return true;
+
+  // Notepad selection is very reliable through Clipboard V2 and the current UIA helper often cold-starts slowly.
+  if (/(notepad|记事本)/.test(joined)) return true;
+
+  return false;
+}
+
+
+function execFileCapture(filePath, args = [], timeoutMs = 650) {
+  return new Promise((resolve) => {
+    execFile(
+      filePath,
+      args,
+      { windowsHide: true, timeout: timeoutMs, maxBuffer: 512 * 1024 },
+      (error, stdout, stderr) => {
+        resolve({ error, stdout: stdout || '', stderr: stderr || '' });
+      }
+    );
+  });
+}
+
+function makeInvalidClipboardV2Result(error, latency, extra = {}) {
+  return {
+    text: '',
+    fullText: '',
+    source: 'clipboard',
+    confidence: 0,
+    rect: null,
+    latency: latency || 0,
+    metadata: {
+      method: 'clipboard-v2-sendinput-sequence',
+      clipboardProvider: 'clipboard-v2',
+      clipboardChanged: false,
+      changed: false,
+      error: error || 'clipboard_v2_invalid',
+      ...extra,
+    },
+  };
+}
+
+function isLikelyPreviousClipboardFragment(text, previousText) {
+  const t = String(text || '').trim();
+  const p = String(previousText || '').trim();
+  if (!t || !p || t.length < 4) return false;
+  if (p.includes(t) && p.length > t.length) return true;
+  // Block common stale terminal / project-path fragments seen in logs.
+  if (/^(cd\s+|npm\s+|npx\s+|[A-Za-z]:\\|\\项目管理|项目管理\\|run\s+start)/i.test(t)) return true;
+  return false;
+}
+
+function calculateClipboardV2Confidence(text, context) {
+  const value = String(text || '').trim();
+  const len = value.length;
+  const lines = value.split(/\r?\n/).filter(Boolean).length;
+  const words = value.split(/\s+/).filter(Boolean).length;
+  if (!value) return 0;
+  if (len > 3000) return 0;
+  if (lines > 6) return 0.5;
+  if (len <= 30 && words <= 6) return 0.85;
+  if (len <= 120 && lines <= 2) return 0.75;
+  if (len <= 300) return 0.65;
+  if (len <= 3000) return 0.5;
+  return 0;
+}
+
+function isClipboardLikeProvider(provider) {
+  return provider && (provider.name === 'clipboard' || provider.name === 'clipboard-v2');
+}
+
 
 /**
  * 计算 clipboard 取词的置信度
@@ -1206,10 +1555,14 @@ function gradeResult(source, result, context) {
   const conf = result.confidence || 0;
   const textLen = result.text.length;
 
-  // Safety: low-confidence clipboard should not enter candidates
-  if (source === 'clipboard' && conf < 0.5) return 'invalid';
-  // Safety: long clipboard text without rect should not be shown
-  if (source === 'clipboard' && textLen > 1000 && !result.rect) return 'invalid';
+  const isClipboardSource = source === 'clipboard' || source === 'clipboard-v2' || result.source === 'clipboard' || result.source === 'clipboard-v2';
+
+  // Safety: low-confidence clipboard should not enter candidates.
+  if (isClipboardSource && conf < 0.5) return 'invalid';
+  // Safety: long clipboard text without rect should not be shown.
+  if (isClipboardSource && textLen > 3000 && !result.rect) return 'invalid';
+  // Clipboard V2 must prove that this Ctrl+C changed the clipboard.
+  if (isClipboardSource && result.metadata?.method === 'clipboard-v2-sendinput-sequence' && result.metadata?.clipboardChanged !== true) return 'invalid';
 
   if (source === 'windows-uia') {
     if (conf >= 0.88 &&
@@ -1222,13 +1575,35 @@ function gradeResult(source, result, context) {
     return 'invalid';
   }
 
-  if (source === 'clipboard') {
+  if (isClipboardSource) {
+    const isClipboardV2Result =
+      result.metadata?.method === 'clipboard-v2-sendinput-sequence' ||
+      result.metadata?.clipboardProvider === 'clipboard-v2';
+    const textPreview = (result.text || '').trim();
+    const looksLikePathOrCommand = /^(?:[A-Za-z]:)?[\\\/]/.test(textPreview) || /^(cd\s+|npm\s+|npx\s+|pnpm\s+|yarn\s+)/i.test(textPreview);
+
+    // Clipboard V2 has already proven this selection by sequence-number change.
+    // For reasonable desktop selections, accept it immediately instead of waiting
+    // for the old UIA provider to spend ~650ms failing. This mainly speeds up
+    // medium/long selections where V2 confidence can be 0.75/0.65.
     if (ENABLE_CLIPBOARD_HARD_WINNER &&
+        isClipboardV2Result &&
+        result.metadata?.clipboardChanged === true &&
+        conf >= 0.5 &&
+        textLen >= 2 && textLen <= 3000 &&
+        !result.metadata?.error &&
+        !looksLikePathOrCommand) {
+      return 'hard_winner';
+    }
+
+    // Keep the older stricter rule for any non-V2 clipboard result.
+    if (ENABLE_CLIPBOARD_HARD_WINNER &&
+        !isClipboardV2Result &&
         conf >= 0.85 &&
         result.metadata?.clipboardChanged === true &&
         textLen >= 2 && textLen <= 300 &&
         !result.metadata?.error &&
-        !/^(?:[A-Za-z]:)?[\\\/]/.test((result.text || '').trim())) {
+        !looksLikePathOrCommand) {
       return 'hard_winner';
     }
     if (conf >= 0.5 && textLen >= 1) return 'candidate';
@@ -1365,13 +1740,13 @@ class SelectionEngine {
         if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: 'ocr', reason: 'shouldTryOcrProvider_false', attemptId: context._perfAttemptId || '' }));
         continue;
       }
-      if (provider.name === 'clipboard' && shouldAvoidClipboardProvider(results, context)) {
-        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: 'clipboard', reason: 'shouldAvoidClipboardProvider_true', attemptId: context._perfAttemptId || '' }));
-        continue;
-      if (provider.name === "clipboard" && clipboardHandled) {
-        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: 'clipboard', reason: 'already_raced_with_uia', session: sessionId }));
+      if (isClipboardLikeProvider(provider) && clipboardHandled) {
+        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: provider.name, reason: 'already_raced_with_uia', session: sessionId }));
         continue;
       }
+      if (isClipboardLikeProvider(provider) && shouldAvoidClipboardProvider(results, context)) {
+        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: provider.name, reason: 'shouldAvoidClipboardProvider_true', attemptId: context._perfAttemptId || '' }));
+        continue;
       }
 
       try {
@@ -1379,15 +1754,16 @@ class SelectionEngine {
         const pickStart = Date.now();
 
         if (provider.name === 'windows-uia') {
-          const clipProvider = this.providers.find(p => p.name === 'clipboard');
-          if (clipProvider) {
+          const clipProvider = this.providers.find(p => USE_CLIPBOARD_V2 ? p.name === 'clipboard-v2' : p.name === 'clipboard');
+          const clipCanHandle = clipProvider && clipProvider.canHandle(context);
+          if (clipProvider && clipCanHandle) {
+            clipboardHandled = true;
             const race = await primaryRace(
               session,
               provider.pick(context),
               clipProvider.pick(context),
               context
             );
-            clipboardHandled = true;
             if (race.status === 'expired') {
               console.log('[Session] expired_during_race', sessionId);
               return { text: '', confidence: 0, source: 'expired-session', _expired: true, _sessionId: sessionId };
@@ -1508,9 +1884,15 @@ function createDefaultEngine(getBrowserPayload) {
   // L2: Windows UI Automation (30) — native desktop text selection
   engine.register(new WindowsUIAProvider());
 
-  // L4: Clipboard fallback (90) — Ctrl+C, last resort
+  // L3: OCR fallback (50) — image/video/subtitle fallback
   engine.register(new OCRProvider());
-  engine.register(new ClipboardProvider());
+
+  // L4: Clipboard fallback — V2 native helper by default; old provider only for emergency rollback.
+  if (USE_CLIPBOARD_V2) {
+    engine.register(new ClipboardProviderV2());
+  } else {
+    engine.register(new ClipboardProvider());
+  }
 
   // L5: Manual fallback (99) — word block selection card
   engine.register(new ManualFallbackProvider());
@@ -1525,6 +1907,7 @@ module.exports = {
   WindowsUIAProvider,
   OCRProvider,
   ClipboardProvider,
+  ClipboardProviderV2,
   ManualFallbackProvider,
   chooseBestPickedInfo,
   markSessionAsShown,
