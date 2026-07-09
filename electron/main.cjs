@@ -147,6 +147,11 @@ let resultFloatingSide = null;
 let lastSelectionRect = null;
 let _currentRecord = null;
 let lastGlobalClick = null;
+
+const PERF_LOGGING = true;  // toggle all [PERF] logs; set false for production
+let _perfAttemptId = null;
+
+
 let suppressNextOutsideClick = null;
 let speakProcess = null;
 let selectionHelperProcess = null;
@@ -1071,6 +1076,8 @@ function simulateCopy() {
 }
 
 async function captureViaEngine(context) {
+  const _aid2 = (context && context._perfAttemptId) || '';
+  if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'capture_engine_start', hasAttemptId: !!_aid2, attemptId: _aid2 }));
   const timeoutMs = (context?.dragDistance && context.dragDistance > 500) ? 3000 : 2000;
   const startTime = Date.now();
   const timeoutPromise = new Promise((_, reject) =>
@@ -1081,9 +1088,11 @@ async function captureViaEngine(context) {
       selectionEngine.getPickedInfo(context || {}),
       timeoutPromise
     ]);
+    if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'capture_engine_end', duration: Date.now() - startTime, pickedSource: (picked && picked.source) || '', pickedTextLen: (picked && picked.text) ? picked.text.length : 0, pickedConf: (picked && picked.confidence) || 0, attemptId: _aid2 }));
     return picked;
   } catch (err) {
     const duration = Date.now() - startTime;
+    if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'capture_engine_timeout', duration, attemptId: _aid2 }));
     console.log('[SelectionEngine] capture timeout attempt=' + Date.now().toString(36) + ' duration=' + duration + 'ms');
     return {
       text: '',
@@ -1095,6 +1104,7 @@ async function captureViaEngine(context) {
 }
 
 async function showToolbarFromSelection(context) {
+  _perfAttemptId = context._perfAttemptId || null;
   const picked = await captureViaEngine(context);
   if (!picked || !picked.text) return;
   return showToolbarForPicked(picked);
@@ -1273,6 +1283,7 @@ function handleSelectionHelperLine(line) {
   if (!line.startsWith('SELECTED|')) return;
   const attemptId = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
   console.log('[Mouse] SELECTED received attempt=' + attemptId);
+  _perfAttemptId = attemptId;
   const store = readStore();
   if (!store.settings.selection?.autoSelect) return;
   const parts = line.split('|');
@@ -1292,6 +1303,8 @@ function handleSelectionHelperLine(line) {
   lastSelectionRect = makeSelectionRect(meta);
   const clipboardText = Buffer.from(encoded, 'base64').toString('utf8').trim();
   const rawText = clipboardText;
+  if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'selected_clipboard', textLen: clipboardText.length, attemptId: attemptId }));
+  if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'capture_via_engine_start', attemptId: attemptId }));
 
   // Use SelectionEngine to get the picked info
   // The engine's ClipboardProvider will also do Ctrl+C for verification,
@@ -1306,6 +1319,8 @@ function handleSelectionHelperLine(line) {
     ),
     foregroundProcessName,
     foregroundWindowTitle,
+    _perfAttemptId: attemptId,
+    _at: Date.now(),
   };
 
   // Fire-and-forget: the engine handles clipboard internally
@@ -1392,6 +1407,8 @@ function showToolbarForText(selected) {
  * instead of showToolbarForText() directly.
  */
 function showToolbarForPicked(picked) {
+const _tbStart = Date.now();
+const aid = _perfAttemptId || '';
   if (!picked || !picked.text) return;
   // Text quality: block if text is just whitespace
   const text = String(picked.text || '').trim();
@@ -1442,6 +1459,7 @@ function showToolbarForPicked(picked) {
   placeToolbarNearSelection();
   hideToolbarMore();
   toolbarWindow.setIgnoreMouseEvents(false);
+  if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'toolbar_show_inactive', durationMs: Date.now() - _tbStart, textLen: text.length, attemptId: aid }));
   toolbarWindow.showInactive();
   console.log('toolbar show for selection', {
     textLength: String(picked.text || '').length,
@@ -1452,9 +1470,11 @@ function showToolbarForPicked(picked) {
   toolbarWindow.webContents.send('selection:ready', {
     pickedInfo: picked,
     selection: picked.text,   // backward compat
+    attemptId: aid,
     skills: getToolbarSkills(),
     allSkills: readStore().skills,
   });
+  if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'toolbar_ready', totalDurationMs: Date.now() - _tbStart, textLen: text.length, attemptId: aid }));
   scheduleToolbarHide();
 }
 
@@ -2643,6 +2663,7 @@ function getBrowserPayload() {
     browserPayload = null;
     return null;
   }
+  browserPayload._perfReceivedAt = browserPayloadAt;
   return browserPayload;
 }
 

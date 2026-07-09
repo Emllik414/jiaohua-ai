@@ -1,4 +1,4 @@
-﻿/**
+/**
  * SelectionEngine — 统一取词入口
  *
  * 设计原则：
@@ -19,6 +19,7 @@ const { clipboard } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const PERF_LOGGING = true;  // toggle all [PERF] logs; set false for production
 
 // ─── Types ────────────────────────────────────────────
 
@@ -159,6 +160,7 @@ class BrowserProvider extends SelectionProvider {
       subtitleOverlayDetected: Boolean(p.metadata?.subtitleOverlayDetected),
       needsManualSelection: Boolean(p.metadata?.needsManualSelection),
       error: p.metadata?.error || p.error || '',
+      _perfReceivedAt: p._perfReceivedAt || 0,
     };
 
     // Keep low-confidence browser markers. Third-party subtitle overlays can be
@@ -225,6 +227,11 @@ class WindowsUIAProvider extends SelectionProvider {
     if (!this._enabled) return false;
     const pn = String(context?.foregroundProcessName || "").toLowerCase();
     if (pn.includes("obsidian") || pn.includes("codex")) return false;
+
+    // 浏览器网页文本不走 UIA；BrowserProvider 未命中时直接进入 ClipboardProvider，节约约 685ms
+    if (pn && /(chrome|msedge|firefox|brave|opera|browser)/.test(pn)) {
+      return false;
+    }
     return true;
   }
 
@@ -786,6 +793,27 @@ function isLikelyGarbledText(text) {
   if (replacementCount === 1 && value.length <= 12) return true;
   return false;
 }
+function scoringBreakdown(c, context, allCandidates) {
+  if (!PERF_LOGGING) return null;
+  const b = {};
+  b.source = c.source;
+  b.baseScore = (SOURCE_WEIGHT[c.source] || 30) + (c.text && c.text.trim() ? 10 : 0) + ((c.confidence || 0) >= 0.75 ? 20 : 0) + (c.rect ? 10 : 0);
+  b.rawTextLen = c.text ? c.text.length : 0;
+  b.rawConfidence = c.confidence || 0;
+  b.hasRect = !!c.rect;
+  b.latency = c.latency || 0;
+  b.penaltyLongText = (c.text && c.text.length > 200) ? -25 : 0;
+  b.penaltyClipLongText = (c.source === 'clipboard' && c.text && c.text.length > 80) ? -25 : 0;
+  b.penaltyGarbled = (c.text && isLikelyGarbledText(c.text)) ? -180 : 0;
+  b.penaltyLatency = (c.latency || 0) > 1500 ? -25 : (c.latency || 0) > 800 ? -10 : 0;
+  b.penaltyLowConf = (c.confidence || 0) < 0.4 ? -30 : 0;
+  const clip = allCandidates.find(r => r.source === 'clipboard' && r.text);
+  b.bonusClipSubstr = (clip && c.source !== 'clipboard' && c.text && clip.text.includes(c.text) && c.text.length > 0) ? 20 : 0;
+  const sameTextCount = allCandidates.filter(r => r.text === c.text && r.text).length;
+  b.bonusConsensus = (sameTextCount >= 2) ? 20 : 0;
+  b.finalScore = b.baseScore + b.bonusClipSubstr + b.bonusConsensus + b.penaltyLongText + b.penaltyClipLongText + b.penaltyGarbled + b.penaltyLatency + b.penaltyLowConf;
+  return b;
+}
 
 function isBrowserWebContext(context = {}, candidates = []) {
   const processName = String(context.foregroundProcessName || '').toLowerCase();
@@ -821,9 +849,14 @@ function hasSubtitleOverlayMarker(candidates) {
 
 function isPrecisionFastPath(result, context = {}) {
   if (!result || result.source !== 'browser') return false;
-  if (!result.text) return false;
-  if (result.metadata?.error) return false;
-  if ((result.confidence || 0) < 0.86) return false;
+  if (!result.text) {
+    if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'short_circuit_skipped', reason: 'empty_text', attemptId: (context && context._perfAttemptId) || '' }));
+    return false;
+  }
+  if (result.metadata?.error) {
+    if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'short_circuit_skipped', reason: 'metadata_error', error: result.metadata.error, attemptId: (context && context._perfAttemptId) || '' }));
+    return false;
+  }
 
   const adapter = result.metadata?.adapter || '';
   const method = result.metadata?.method || '';
@@ -834,7 +867,15 @@ function isPrecisionFastPath(result, context = {}) {
   const isPrecisionMethod = precisionMethods.includes(method);
   if (!isPrecisionAdapter && !isPrecisionMethod) return false;
 
-  // Rect proximity check
+  // Confidence threshold: subtitle adapters keep 0.86, window-selection accepts 0.82
+  const isWindowSel = method === 'window-selection';
+  const minConfidence = isWindowSel ? 0.82 : 0.86;
+  if ((result.confidence || 0) < minConfidence) {
+    if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'short_circuit_skipped', reason: 'confidence_low', confidence: result.confidence, minConfidence, method, attemptId: (context && context._perfAttemptId) || '' }));
+    return false;
+  }
+
+  // Rect proximity check — reject payload whose rect is far from the drag area
   if (result.rect && context.cursorStart && context.cursorEnd) {
     const dragLeft = Math.min(context.cursorStart.x, context.cursorEnd.x);
     const dragRight = Math.max(context.cursorStart.x, context.cursorEnd.x);
@@ -846,8 +887,21 @@ function isPrecisionFastPath(result, context = {}) {
     const dragCy = (dragTop + dragBottom) / 2;
     const dist = Math.hypot(rectCx - dragCx, rectCy - dragCy);
     const dragDiag = Math.hypot(dragRight - dragLeft, dragBottom - dragTop);
-    if (dist > Math.max(200, dragDiag * 1.5)) return false;
+    if (dist > Math.max(200, dragDiag * 1.5)) {
+      if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'short_circuit_skipped', reason: 'rect_mismatch', dist, threshold: Math.max(200, dragDiag * 1.5), attemptId: (context && context._perfAttemptId) || '' }));
+      return false;
+    }
   }
+
+  // Time-based freshness check: payload must not be significantly older than selection
+  const payloadAt = result.metadata?._perfReceivedAt || 0;
+  const selectionAt = context?._at || 0;
+  if (selectionAt > 0 && payloadAt > 0 && payloadAt < selectionAt - 200) {
+    if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'short_circuit_skipped', reason: 'payload_stale', payloadAt, selectionAt, gapMs: selectionAt - payloadAt, attemptId: (context && context._perfAttemptId) || '' }));
+    return false;
+  }
+
+  if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'short_circuit_browser_window_selection', textLen: result.text.length, confidence: result.confidence, payloadAt, selectionAt, rectMatched: !!result.rect, method, adapter, attemptId: (context && context._perfAttemptId) || '' }));
   return true;
 }
 
@@ -1093,35 +1147,52 @@ class SelectionEngine {
     const results = [];
 
     for (const provider of this.providers) {
-      if (!provider.canHandle(context)) continue;
-      if (provider.name === 'ocr' && !shouldTryOcrProvider(results, context)) continue;
-      if (provider.name === 'clipboard' && shouldAvoidClipboardProvider(results, context)) continue;
+      const providerStart = Date.now();
+      const reason = provider.canHandle(context);
+      if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'canHandle', provider: provider.name, result: !!reason, attemptId: context._perfAttemptId || '' }));
+      if (!reason) continue;
+      if (provider.name === 'ocr' && !shouldTryOcrProvider(results, context)) {
+        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: 'ocr', reason: 'shouldTryOcrProvider_false', attemptId: context._perfAttemptId || '' }));
+        continue;
+      }
+      if (provider.name === 'clipboard' && shouldAvoidClipboardProvider(results, context)) {
+        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: 'clipboard', reason: 'shouldAvoidClipboardProvider_true', attemptId: context._perfAttemptId || '' }));
+        continue;
+      }
 
       try {
+        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'pick_start', provider: provider.name, attemptId: context._perfAttemptId || '' }));
+        const pickStart = Date.now();
         const result = await provider.pick(context);
+        const pickDuration = Date.now() - pickStart;
+        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'pick_end', provider: provider.name, duration: pickDuration, textLen: (result && result.text) ? result.text.length : 0, confidence: (result && result.confidence) || 0, hasRect: !!(result && result.rect), isTimeout: false, source: provider.name, attemptId: context._perfAttemptId || '' }));
         if (result) {
           results.push(result);
 
-          // Browser 高置信度 → 直接返回，不被后续覆盖
+          // Browser high-confidence -> short-circuit
           if (isPrecisionFastPath(result, context)) {
-            console.log('[SelectionEngine] precision fast path:', JSON.stringify({
-              adapter: result.metadata?.adapter,
-              method: result.metadata?.method,
-              text: (result.text || '').slice(0, 40),
-              confidence: result.confidence,
-            }));
+            if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'short_circuit', provider: provider.name, reason: 'precision_fast_path', attemptId: context._perfAttemptId || '' }));
             break;
           }
 
-          // UIA 高置信度 → 直接返回，但 browser 优先
+          // UIA high-confidence -> short-circuit, but only if no browser result yet
           if (result.text && provider.name === 'windows-uia' && (result.confidence || 0) >= 0.75 &&
               !results.some(r => r.source === 'browser')) {
+            if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'short_circuit', provider: provider.name, reason: 'uia_high_confidence', attemptId: context._perfAttemptId || '' }));
             break;
           }
         }
       } catch (err) {
-        console.error(`[SelectionEngine] ${provider.name} error:`, err.message);
+        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'pick_error', provider: provider.name, error: err.message, attemptId: context._perfAttemptId || '' }));
+        console.error('[SelectionEngine] ${provider.name} error:', err.message);
       }
+    }
+
+    // Log all candidate results before scoring
+    if (PERF_LOGGING && results.length > 0) {
+      results.forEach(function(r) {
+        console.log('[Provider:result]', JSON.stringify({ event: 'candidate', source: r.source, textLen: r.text ? r.text.length : 0, confidence: r.confidence || 0, latency: r.latency || 0, hasRect: !!r.rect, method: (r.metadata && r.metadata.method) || '', attemptId: context._perfAttemptId || '' }));
+      });
     }
 
     const best = chooseBestPickedInfo(results, context);
@@ -1153,6 +1224,19 @@ class SelectionEngine {
       totalLatency: best.latency,
     };
     console.log('[selection:decision]', JSON.stringify(logEntry));
+    // [PERF] Detailed scoring breakdown
+    if (PERF_LOGGING) {
+      const breakdownScores = {};
+      const allResults = Array.isArray(best.candidates) ? best.candidates : results;
+      const ctx = context || {};
+      for (const cand of allResults) {
+        if (cand && cand.source) {
+          const bd = scoringBreakdown(cand, ctx, allResults);
+          if (bd) breakdownScores[cand.source] = bd;
+        }
+      }
+      console.log('[PERF]', JSON.stringify({ event: 'scoring_detail', totalLatency: best.latency, pickedSource: best.source, pickedReason: best.reason || '', scores: breakdownScores, attemptId: (context && context._perfAttemptId) ? context._perfAttemptId : '' }));
+    }
 
     if (best.needsManualSelection || (best.metadata && best.metadata.needsManualSelection)) {
       best.metadata = { ...best.metadata, lowConfidenceWarning: true };

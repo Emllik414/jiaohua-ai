@@ -1523,7 +1523,10 @@ function ToolbarView() {
     window.desktopApi.getInitialData().then((data) => setSkills(data.toolbarSkills))
 
     // Visibility toggle — near-instant CSS transition
-    const offShow = window.desktopApi.onToolbarShow(() => setVisible(true))
+    const offShow = window.desktopApi.onToolbarShow(() => {
+      if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[PERF] renderer toolbar:show at=' + Date.now());
+      setVisible(true)
+    })
     const offHide = window.desktopApi.onToolbarHide(() => {
       setVisible(false)
       setMoreOpen(false)
@@ -1532,6 +1535,7 @@ function ToolbarView() {
       setMoreOpen(Boolean(payload.open))
     })
     const offSelection = window.desktopApi.onSelectionReady((payload: any) => {
+      if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[PERF] renderer selection:ready at=' + Date.now() + ' attemptId=' + (payload as any).attemptId);
       setSelection(payload.selection)
       setSkills(payload.skills)
       setBusySkill('')
