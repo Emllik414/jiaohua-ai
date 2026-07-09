@@ -226,14 +226,27 @@ class WindowsUIAProvider extends SelectionProvider {
   }
 
   canHandle(context) {
-    if (!this._enabled) return false;
+    const _aid = context?._perfAttemptId || '';
     const pn = String(context?.foregroundProcessName || "").toLowerCase();
-    if (pn.includes("obsidian") || pn.includes("codex")) return false;
-
-    // 浏览器网页文本不走 UIA；BrowserProvider 未命中时直接进入 ClipboardProvider，节约约 685ms
-    if (pn && /(chrome|msedge|firefox|brave|opera|browser)/.test(pn)) {
+    const title = String(context?.foregroundWindowTitle || "").toLowerCase();
+    if (!this._enabled) {
+      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'disabled' }));
       return false;
     }
+    if (pn.includes("obsidian")) {
+      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'obsidian_skipped' }));
+      return false;
+    }
+    if (pn.includes("codex")) {
+      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'codex_skipped' }));
+      return false;
+    }
+    // 浏览器网页文本不走 UIA；BrowserProvider 未命中时直接进入 ClipboardProvider，节约约 685ms
+    if (pn && /(chrome|msedge|firefox|brave|opera|browser)/.test(pn)) {
+      console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: false, reason: 'browser_skipped' }));
+      return false;
+    }
+    console.log('[UIACanHandleDebug]', JSON.stringify({ attemptId: _aid, processName: pn, windowTitle: title, result: true, reason: 'allowed' }));
     return true;
   }
 
@@ -267,22 +280,40 @@ class WindowsUIAProvider extends SelectionProvider {
       const parsed = this._parseOutput(raw);
       if (!parsed || !parsed.text) return null;
 
-      return {
-        text: parsed.text,
-        fullText: parsed.text,
-        source: 'windows-uia',
-        confidence: parsed.confidence || 0.8,
-        rect: parsed.rect || undefined,
-        appName: parsed.appName || undefined,
-        windowTitle: parsed.windowTitle || undefined,
-        latency: Date.now() - startTime,
-        metadata: {
-          method: parsed.method || '',
-          uiaConfidence: parsed.confidence || 0,
-          fullTextPreview: (parsed.fullText || '').slice(0, 120),
-          error: parsed.error || '',
-        },
-      };
+     const _duration = Date.now() - startTime;
+     const _uiaResult = {
+       text: parsed.text,
+       fullText: parsed.text,
+       source: 'windows-uia',
+       confidence: parsed.confidence || 0.8,
+       rect: parsed.rect || undefined,
+       appName: parsed.appName || undefined,
+       windowTitle: parsed.windowTitle || undefined,
+       latency: _duration,
+       metadata: {
+         method: parsed.method || '',
+         uiaConfidence: parsed.confidence || 0,
+         fullTextPreview: (parsed.fullText || '').slice(0, 120),
+         error: parsed.error || '',
+       },
+     };
+     console.log('[UIAResultDebug]', JSON.stringify({
+       attemptId: context?._perfAttemptId || '',
+       processName: context?.foregroundProcessName || '',
+       windowTitle: context?.foregroundWindowTitle || '',
+       hasResult: true,
+       textLen: (_uiaResult.text || '').length,
+       textPreview: String(_uiaResult.text || '').slice(0, 80),
+       confidence: _uiaResult.confidence,
+       conf: parsed.confidence,
+       source: _uiaResult.source,
+       method: parsed.method || '',
+       metadataMethod: _uiaResult.metadata.method,
+       error: parsed.error || '',
+       rawKeys: Object.keys(_uiaResult),
+       metadataKeys: Object.keys(_uiaResult.metadata)
+     }));
+     return _uiaResult;
     } catch (err) {
       return null;
     }
@@ -554,33 +585,50 @@ class ClipboardProvider extends SelectionProvider {
 
   async pick(context) {
     const startTime = Date.now();
+    const _aid = (context && context._perfAttemptId) || '';
 
     // 1. 保存剪贴板原始内容
+    const _backupStart = Date.now();
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'clipboard_backup_start', attemptId: _aid, duration: 0, textLen: 0, changed: false, error: '' }));
     let previous = '';
     try {
       previous = clipboard.readText() || '';
     } catch (_) { /* ignore */ }
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'clipboard_backup_end', attemptId: _aid, duration: Date.now() - _backupStart, textLen: previous.length, changed: false, error: '' }));
 
     // 2. 模拟 Ctrl+C
+    const _ctrlCStart = Date.now();
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'send_ctrl_c_start', attemptId: _aid, duration: 0, textLen: 0, changed: false, error: '' }));
     await simulateCtrlC();
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'send_ctrl_c_end', attemptId: _aid, duration: Date.now() - _ctrlCStart, textLen: 0, changed: false, error: '' }));
 
     // 3. 等待剪贴板更新
     const dragDist = context?.dragDistance || 0;
     const waitTime = dragDist < 50 ? 120 : dragDist < 200 ? 180 : dragDist < 500 ? 280 : 400;
+    const _waitStart = Date.now();
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'wait_clipboard_changed_start', attemptId: _aid, duration: 0, textLen: 0, changed: false, error: '' }));
     await sleep(waitTime);
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'wait_clipboard_changed_end', attemptId: _aid, duration: Date.now() - _waitStart, textLen: 0, changed: false, error: '' }));
 
     // 4. 读取剪贴板
+    const _readStart = Date.now();
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'read_clipboard_start', attemptId: _aid, duration: 0, textLen: 0, changed: false, error: '' }));
     let selected = '';
     try {
       selected = (clipboard.readText() || '').trim();
     } catch (_) { /* ignore */ }
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'read_clipboard_end', attemptId: _aid, duration: Date.now() - _readStart, textLen: selected.length, changed: false, error: '' }));
 
     // 5. 恢复原始剪贴板
+    const _restoreStart = Date.now();
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'restore_clipboard_start', attemptId: _aid, duration: 0, textLen: 0, changed: false, error: '' }));
     try {
       clipboard.writeText(previous || '');
     } catch (_) { /* ignore */ }
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'restore_clipboard_end', attemptId: _aid, duration: Date.now() - _restoreStart, textLen: 0, changed: false, error: '' }));
 
     const latency = Date.now() - startTime;
+    console.log('[ClipboardTiming]', JSON.stringify({ stage: 'clipboard_total', attemptId: _aid, duration: latency, textLen: selected.length, changed: false, error: '' }));
 
     // 6. 校验
     if (!selected) {
@@ -1158,6 +1206,11 @@ function gradeResult(source, result, context) {
   const conf = result.confidence || 0;
   const textLen = result.text.length;
 
+  // Safety: low-confidence clipboard should not enter candidates
+  if (source === 'clipboard' && conf < 0.5) return 'invalid';
+  // Safety: long clipboard text without rect should not be shown
+  if (source === 'clipboard' && textLen > 1000 && !result.rect) return 'invalid';
+
   if (source === 'windows-uia') {
     if (conf >= 0.88 &&
         result.metadata?.method === 'uia-textpattern-rangefrompoint' &&
@@ -1194,6 +1247,13 @@ async function primaryRace(session, uiaPromise, clipPromise, context) {
   let uiaCandidate = null;
   let clipCandidate = null;
   let completed = false;
+  const _uiaStart = Date.now();
+  const _clipStart = Date.now();
+  const _sid = session.sessionId;
+  const _aid = context?._perfAttemptId;
+
+  console.log('[RaceTiming] provider_start', JSON.stringify({ source: 'windows-uia', sessionId: _sid, attemptId: _aid, at: _uiaStart }));
+  console.log('[RaceTiming] provider_start', JSON.stringify({ source: 'clipboard', sessionId: _sid, attemptId: _aid, at: _clipStart }));
 
   function onComplete(source, result, resolve) {
     if (!isSessionActive(session)) {
@@ -1214,6 +1274,16 @@ async function primaryRace(session, uiaPromise, clipPromise, context) {
 
     const grade = gradeResult(source, result, context);
     console.log('[Race] provider_returned', source, 'grade:', grade, 'conf:', result?.confidence, 'session:', session.sessionId);
+    const _start = source === 'windows-uia' ? _uiaStart : _clipStart;
+    console.log('[RaceTiming] provider_end', JSON.stringify({
+      source, sessionId: _sid, attemptId: _aid,
+      duration: Date.now() - _start,
+      textLen: (result && result.text) ? result.text.length : 0,
+      confidence: result && result.confidence,
+      method: (result && result.metadata && result.metadata.method) || '',
+      error: (result && (result.metadata?.error || result.error)) || '',
+      grade
+    }));
 
     if (grade === 'hard_winner') {
       completed = true;
