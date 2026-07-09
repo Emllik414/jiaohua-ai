@@ -125,7 +125,7 @@ function getActiveProviderConfig() {
 }
 
 // ─── SelectionEngine — 统一取词入口 ───
-const { createDefaultEngine } = require('./selection-engine.cjs');
+const { createDefaultEngine, markSessionAsShown, isSessionActiveId } = require('./selection-engine.cjs');
 // Browser payload cache is set by the HTTP receiver below.
 // We pass the getter to createDefaultEngine so BrowserProvider can read it.
 const selectionEngine = createDefaultEngine(getBrowserPayload);
@@ -1106,7 +1106,7 @@ async function captureViaEngine(context) {
 async function showToolbarFromSelection(context) {
   _perfAttemptId = context._perfAttemptId || null;
   const picked = await captureViaEngine(context);
-  if (!picked || !picked.text) return;
+ 
   return showToolbarForPicked(picked);
 }
 
@@ -1326,6 +1326,7 @@ function handleSelectionHelperLine(line) {
   // Fire-and-forget: the engine handles clipboard internally
   const startTime = Date.now();
   captureViaEngine(context).then((picked) => {
+    console.log('[Debug] captureViaEngine returned', JSON.stringify({ textLen: picked && picked.text ? picked.text.length : 0, source: picked && picked.source, confidence: picked && picked.confidence, expired: picked && picked._expired, sessionId: picked && picked._sessionId, needsManualSelection: picked && picked.needsManualSelection }));
     const duration = Date.now() - startTime;
     console.log('[Mouse] pick done attempt=' + attemptId + ' duration=' + duration + 'ms resultProvider=' + (picked?.source || 'none') + ' textLen=' + (picked?.text || '').length + ' conf=' + (picked?.confidence || 0));
     // needsManualSelection takes priority over garbage text from UIA estimated results
@@ -1407,6 +1408,16 @@ function showToolbarForText(selected) {
  * instead of showToolbarForText() directly.
  */
 function showToolbarForPicked(picked) {
+    console.log('[Debug] showToolbarForPicked enter', JSON.stringify({ hasPicked: !!picked, textLen: picked && picked.text ? picked.text.length : 0, source: picked && picked.source, confidence: picked && picked.confidence, expired: picked && picked._expired, sessionId: picked && picked._sessionId }));
+  // Session guards
+  if (!picked || picked._expired) {
+ 
+    return;
+  }
+  if (picked._sessionId && typeof isSessionActiveId === 'function' && !isSessionActiveId(picked._sessionId)) {
+ 
+    return;
+  }
 const _tbStart = Date.now();
 const aid = _perfAttemptId || '';
   if (!picked || !picked.text) return;
@@ -1420,7 +1431,7 @@ const aid = _perfAttemptId || '';
   const source = picked.source || picked.provider || 'unknown';
   const conf = picked.confidence || 0;
   if (conf < 0.5 && source !== 'browser') {
-    console.log('[Toolbar] blocked show reason=low-confidence conf=' + conf + ' source=' + source);
+ 
     return;
   }
   // New selection while AI generating or result visible: cancel old state first
@@ -1460,6 +1471,7 @@ const aid = _perfAttemptId || '';
   hideToolbarMore();
   toolbarWindow.setIgnoreMouseEvents(false);
   if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'toolbar_show_inactive', durationMs: Date.now() - _tbStart, textLen: text.length, attemptId: aid }));
+  console.log('[Toolbar] before showInactive', JSON.stringify({ textLen: text.length, source: picked.source }));
   toolbarWindow.showInactive();
   console.log('toolbar show for selection', {
     textLength: String(picked.text || '').length,
@@ -1474,6 +1486,11 @@ const aid = _perfAttemptId || '';
     skills: getToolbarSkills(),
     allSkills: readStore().skills,
   });
+
+  // Notify session: toolbar shown
+  if (typeof markSessionAsShown === 'function' && picked._sessionId) {
+    markSessionAsShown(picked._sessionId);
+  }
   if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'toolbar_ready', totalDurationMs: Date.now() - _tbStart, textLen: text.length, attemptId: aid }));
   scheduleToolbarHide();
 }
@@ -1606,14 +1623,8 @@ function toggleToolbarMore() {
 }
 
 function scheduleToolbarHide() {
+  // Timer removed: toolbar stays visible until explicitly hidden
   clearTimeout(toolbarHideTimer);
-  toolbarHideTimer = setTimeout(() => {
-    if (toolbarWindow && toolbarWindow.isVisible()) {
-      toolbarPointerInside = false;
-      toolbarExpanded = false;
-      hideToolbarViaCss();
-    }
-  }, 5500);
 }
 
 function shouldSuppressSkillStartClick(clickX, clickY) {

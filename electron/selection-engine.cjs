@@ -21,6 +21,8 @@ const path = require('path');
 const fs = require('fs');
 const PERF_LOGGING = true;  // toggle all [PERF] logs; set false for production
 
+const ENABLE_CLIPBOARD_HARD_WINNER = true;  // allow Clipboard to be hard winner in desktop race
+
 // ─── Types ────────────────────────────────────────────
 
 /**
@@ -1110,16 +1112,151 @@ function buildDecision(picked, all, scores, reason) {
 
 // ─── SelectionEngine ─────────────────────────────────
 
+// ─── Session Management ──────────────────────────
+
+let currentSession = null;
+
+function createSession(context) {
+  if (currentSession) {
+    currentSession.state = 'expired';
+    console.log('[Session] expired', currentSession.sessionId);
+  }
+  const session = {
+    sessionId: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    state: 'capturing',
+    isBrowser: /(chrome|msedge|firefox|brave|opera|browser)/.test(String(context?.foregroundProcessName || '')),
+    processName: context?.foregroundProcessName || '',
+  };
+  currentSession = session;
+  console.log('[Session] start', session.sessionId, 'browser:', session.isBrowser);
+  return session;
+}
+
+function isSessionActive(session) {
+  return currentSession === session;
+}
+
+function isSessionActiveId(sessionId) {
+  return !!currentSession && currentSession.sessionId === sessionId;
+}
+
+function markSessionAsShown(sessionId) {
+  if (currentSession && currentSession.sessionId === sessionId && currentSession.state === 'resolved') {
+    currentSession.state = 'shown';
+    console.log('[Session] shown', sessionId);
+  }
+}
+
+// ─── Result Grading ──────────────────────────────
+
+
+function gradeResult(source, result, context) {
+  if (!result || !result.text) return 'invalid';
+  if (result.metadata?.error && !result.metadata?.error.includes('subtitle_overlay')) return 'invalid';
+  if (isLikelyGarbledText(result.text)) return 'invalid';
+
+  const conf = result.confidence || 0;
+  const textLen = result.text.length;
+
+  if (source === 'windows-uia') {
+    if (conf >= 0.88 &&
+        result.metadata?.method === 'uia-textpattern-rangefrompoint' &&
+        textLen >= 2 && textLen <= 1000 &&
+        !result.metadata?.error) {
+      return 'hard_winner';
+    }
+    if (conf >= 0.5 && textLen >= 1) return 'candidate';
+    return 'invalid';
+  }
+
+  if (source === 'clipboard') {
+    if (ENABLE_CLIPBOARD_HARD_WINNER &&
+        conf >= 0.85 &&
+        result.metadata?.clipboardChanged === true &&
+        textLen >= 2 && textLen <= 300 &&
+        !result.metadata?.error &&
+        !/^(?:[A-Za-z]:)?[\\\/]/.test((result.text || '').trim())) {
+      return 'hard_winner';
+    }
+    if (conf >= 0.5 && textLen >= 1) return 'candidate';
+    return 'invalid';
+  }
+
+  if (conf >= 0.5 && textLen >= 1) return 'candidate';
+  return 'invalid';
+}
+
+// ─── Primary Race ────────────────────────────────
+
+async function primaryRace(session, uiaPromise, clipPromise, context) {
+  let uiaDone = false;
+  let clipDone = false;
+  let uiaCandidate = null;
+  let clipCandidate = null;
+  let completed = false;
+
+  function onComplete(source, result, resolve) {
+    if (!isSessionActive(session)) {
+      if (!completed) {
+        completed = true;
+        console.log('[Session] expired_result_ignored', session.sessionId);
+        resolve({ status: 'expired' });
+      }
+      return;
+    }
+    if (completed) {
+      console.log('[Race] late_result_ignored', source, 'session:', session.sessionId);
+      return;
+    }
+
+    if (source === 'windows-uia') uiaDone = true;
+    else clipDone = true;
+
+    const grade = gradeResult(source, result, context);
+    console.log('[Race] provider_returned', source, 'grade:', grade, 'conf:', result?.confidence, 'session:', session.sessionId);
+
+    if (grade === 'hard_winner') {
+      completed = true;
+      session.state = 'resolved';
+      session.pickedResult = result;
+      console.log('[Race] hard_winner', source, 'session:', session.sessionId);
+      resolve({ status: 'winner', result, source: 'hard_winner' });
+      return;
+    }
+
+    if (grade === 'candidate') {
+      console.log('[Race] candidate_stored', source, 'session:', session.sessionId);
+      if (source === 'windows-uia') uiaCandidate = result;
+      else clipCandidate = result;
+    }
+
+    if (uiaDone && clipDone) {
+      completed = true;
+      const candidates = [uiaCandidate, clipCandidate].filter(r => r !== null);
+      if (candidates.length >= 1) {
+        const best = chooseBestPickedInfo(candidates, context);
+        session.state = 'resolved';
+        session.pickedResult = best;
+        console.log('[Race] both_candidates_choose_best', 'source:', best.source, 'session:', session.sessionId);
+        resolve({ status: 'winner', result: best, source: 'choose_best' });
+      } else {
+        console.log('[Race] both_invalid', 'session:', session.sessionId);
+        resolve({ status: 'no_candidate' });
+      }
+    }
+  }
+
+  return new Promise((resolve) => {
+    uiaPromise.then(r => onComplete('windows-uia', r, resolve)).catch(() => onComplete('windows-uia', null, resolve));
+    clipPromise.then(r => onComplete('clipboard', r, resolve)).catch(() => onComplete('clipboard', null, resolve));
+  });
+}
+
 class SelectionEngine {
   constructor() {
     /** @type {SelectionProvider[]} */
     this.providers = [];
   }
-
-  /**
-   * 注册 Provider（按 priority 排序）
-   * @param {SelectionProvider} provider
-   */
   register(provider) {
     this.providers.push(provider);
     this.providers.sort((a, b) => a.priority - b.priority);
@@ -1143,7 +1280,10 @@ class SelectionEngine {
    * @returns {Promise<PickedInfo>}
    */
   async getPickedInfo(context = {}) {
+    const session = createSession(context);
+    const sessionId = session.sessionId;
     const overallStart = Date.now();
+    let clipboardHandled = false;
     const results = [];
 
     for (const provider of this.providers) {
@@ -1158,33 +1298,59 @@ class SelectionEngine {
       if (provider.name === 'clipboard' && shouldAvoidClipboardProvider(results, context)) {
         if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: 'clipboard', reason: 'shouldAvoidClipboardProvider_true', attemptId: context._perfAttemptId || '' }));
         continue;
+      if (provider.name === "clipboard" && clipboardHandled) {
+        if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'skip_conditional', provider: 'clipboard', reason: 'already_raced_with_uia', session: sessionId }));
+        continue;
+      }
       }
 
       try {
         if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'pick_start', provider: provider.name, attemptId: context._perfAttemptId || '' }));
         const pickStart = Date.now();
+
+        if (provider.name === 'windows-uia') {
+          const clipProvider = this.providers.find(p => p.name === 'clipboard');
+          if (clipProvider) {
+            const race = await primaryRace(
+              session,
+              provider.pick(context),
+              clipProvider.pick(context),
+              context
+            );
+            clipboardHandled = true;
+            if (race.status === 'expired') {
+              console.log('[Session] expired_during_race', sessionId);
+              return { text: '', confidence: 0, source: 'expired-session', _expired: true, _sessionId: sessionId };
+            }
+            if (race.status === 'winner') {
+              race.result._sessionId = sessionId;
+              console.log('[Session] resolved', race.source, 'session:', sessionId);
+              return race.result;
+            }
+            console.log('[Session] ocr_fallback_start', sessionId);
+            continue;
+          }
+        }
+
         const result = await provider.pick(context);
         const pickDuration = Date.now() - pickStart;
         if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'pick_end', provider: provider.name, duration: pickDuration, textLen: (result && result.text) ? result.text.length : 0, confidence: (result && result.confidence) || 0, hasRect: !!(result && result.rect), isTimeout: false, source: provider.name, attemptId: context._perfAttemptId || '' }));
         if (result) {
           results.push(result);
 
-          // Browser high-confidence -> short-circuit
           if (isPrecisionFastPath(result, context)) {
             if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'short_circuit', provider: provider.name, reason: 'precision_fast_path', attemptId: context._perfAttemptId || '' }));
             break;
           }
 
-          // UIA high-confidence -> short-circuit, but only if no browser result yet
-          if (result.text && provider.name === 'windows-uia' && (result.confidence || 0) >= 0.75 &&
-              !results.some(r => r.source === 'browser')) {
+          if (result.text && provider.name === 'windows-uia' && (result.confidence || 0) >= 0.75 && !results.some(r => r.source === 'browser')) {
             if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'short_circuit', provider: provider.name, reason: 'uia_high_confidence', attemptId: context._perfAttemptId || '' }));
             break;
           }
         }
       } catch (err) {
         if (PERF_LOGGING) console.log('[Provider]', JSON.stringify({ event: 'pick_error', provider: provider.name, error: err.message, attemptId: context._perfAttemptId || '' }));
-        console.error('[SelectionEngine] ${provider.name} error:', err.message);
+        console.error('[SelectionEngine] provider error:', err.message);
       }
     }
 
@@ -1197,6 +1363,7 @@ class SelectionEngine {
 
     const best = chooseBestPickedInfo(results, context);
     best.latency = Date.now() - overallStart;
+    best._sessionId = sessionId;
 
     // selection:decision log
     const decisionCandidates = Array.isArray(best.candidates) ? best.candidates : results;
@@ -1290,5 +1457,7 @@ module.exports = {
   ClipboardProvider,
   ManualFallbackProvider,
   chooseBestPickedInfo,
+  markSessionAsShown,
+  isSessionActiveId,
   createDefaultEngine,
 };
