@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   stopSpeak: () => ipcRenderer.invoke('tts:stop'),
   showMain: () => ipcRenderer.invoke('window:show-main'),
   closeCurrent: () => ipcRenderer.invoke('window:close-current'),
+  rendererLog: (msg) => ipcRenderer.send('renderer-log', msg),
   hideToolbar: () => ipcRenderer.invoke('toolbar:hide'),
   resizeToolbar: (expanded) => ipcRenderer.invoke('toolbar:resize', expanded),
   toggleToolbarMore: (anchor) => ipcRenderer.invoke('toolbar-more:toggle', anchor),

@@ -1,4 +1,4 @@
-﻿const { app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, ipcMain, screen, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, ipcMain, screen, nativeImage, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -145,6 +145,9 @@ let toolbarMoreAnchor = null;
 let currentFloatingSide = 'below';
 let resultFloatingSide = null;
 let lastSelectionRect = null;
+let _currentRecord = null;
+let lastGlobalClick = null;
+let suppressNextOutsideClick = null;
 let speakProcess = null;
 let selectionHelperProcess = null;
 let toolbarHideTimer = null;
@@ -1037,7 +1040,6 @@ async function runPronunciationSkill(skill, selectedText) {
   currentAbortController = new AbortController();
 
   placeResultNearSelection();
-  resultInteractionUntil = Date.now() + 900;
   resultWindow.webContents.send('result:ready', { ...record, runId: currentRunId });
   resultWindow.showInactive();
   hideToolbarViaCss();
@@ -1047,7 +1049,7 @@ async function runPronunciationSkill(skill, selectedText) {
       const nextText = fullText || `${record.answerMarkdown}${_delta || ''}`;
       record = { ...record, answerMarkdown: nextText };
       if (resultWindow && !resultWindow.isDestroyed()) {
-        resultWindow.webContents.send('result:update', { ...record, runId: currentRunId });
+        resultWindow.webContents.send('result:update', { ...record, runId: callbackRunId });
       }
     });
     record = { ...record, providerId: result.providerId, model: result.model, prompt: result.prompt, answerMarkdown: result.answer, status: 'completed' };
@@ -1530,6 +1532,7 @@ function explicitCloseResultCard(reason) {
   }
   resultPointerInside = false;
   resultInteractionUntil = 0;
+  pendingResultTargetHeight = null;
   overlayState = 'idle';
   // Cancel current run so stale streaming updates don't reach renderer
   if (currentAbortController) {
@@ -1593,18 +1596,33 @@ function scheduleToolbarHide() {
   }, 5500);
 }
 
+function shouldSuppressSkillStartClick(clickX, clickY) {
+  if (!suppressNextOutsideClick || suppressNextOutsideClick.consumed || suppressNextOutsideClick.runId !== currentRunId) return false;
+  var age = Date.now() - suppressNextOutsideClick.createdAt;
+  var samePos = Math.abs(clickX - suppressNextOutsideClick.x) <= 4 && Math.abs(clickY - suppressNextOutsideClick.y) <= 4;
+  if (age <= 120 && samePos) {
+    suppressNextOutsideClick.consumed = true;
+    suppressNextOutsideClick = null;
+    console.log('[Click] suppress same skill-start click');
+    return true;
+  }
+  suppressNextOutsideClick = null;
+  return false;
+}
+
 function handleGlobalClick(line) {
   const [, xRaw, yRaw] = line.split('|');
   const point = normalizeHookPoint(xRaw, yRaw);
   const x = point.x;
   const y = point.y;
+  lastGlobalClick = { x, y, at: Date.now() };
   const toolbarVisible = toolbarWindow && !toolbarWindow.isDestroyed() && toolbarWindow.isVisible();
   const resultVisible = resultWindow && !resultWindow.isDestroyed() && resultWindow.isVisible();
   if (!toolbarVisible && !resultVisible) return;
 
   const toolbarBounds = toolbarVisible ? toolbarWindow.getBounds() : null;
   const toolbarPad = toolbarExpanded ? 10 : 6;
-  const visualHeight = toolbarVisible ? (toolbarWindow._visualHeight || toolbarBounds.height) : 0;
+  const visualHeight = toolbarVisible ? (toolbarBounds.height || toolbarWindow._visualHeight) : 0;
   const insideToolbar = toolbarBounds
     ? x >= toolbarBounds.x - toolbarPad && x <= toolbarBounds.x + toolbarBounds.width + toolbarPad && y >= toolbarBounds.y - toolbarPad && y <= toolbarBounds.y + visualHeight + toolbarPad
     : false;
@@ -1620,9 +1638,7 @@ function handleGlobalClick(line) {
     ? x >= resultBounds.x && x <= resultBounds.x + resultBounds.width && y >= resultBounds.y && y <= resultBounds.y + resultBounds.height
     : false;
 
-  if (toolbarVisible && Date.now() < toolbarInteractionUntil) {
-    scheduleToolbarHide();
-  } else if (toolbarVisible && (toolbarPointerInside || toolbarMorePointerInside || insideToolbar || insideMore)) {
+  if (toolbarVisible && (toolbarPointerInside || toolbarMorePointerInside || insideToolbar || insideMore)) {
     scheduleToolbarHide();
   } else if (toolbarVisible) {
     toolbarPointerInside = false;
@@ -1636,10 +1652,10 @@ function handleGlobalClick(line) {
     resultVisible &&
     !insideResult &&
     !insideToolbar &&
-    !insideMore &&
-    (overlayState === 'ai_generating' || Date.now() > resultInteractionUntil)
+    !insideMore
     ) {
-    explicitCloseResultCard('outside-click');
+    if (shouldSuppressSkillStartClick(x, y)) {}
+    else { console.log('[Click] outside result close immediately'); explicitCloseResultCard('outside-click'); }
   }
   console.log('[Toolbar] outside click processed overlayState=' + overlayState);
 }
@@ -1737,7 +1753,7 @@ function buildMessages(skill, selection) {
   return { systemContent, userContent };
 }
 
-async function dispatchByApiType(apiType, opts) {
+async function dispatchByApiType(apiType, opts) { console.log('[FLOW] dispatchByApiType opts.runId=' + (opts ? opts.runId : 'NO_OPTS') + ' hasRunId=' + (opts ? ('runId' in opts) : 'N/A'));
   const { url, apiKey, model, authHeader, authPrefix, extraHeaders, systemContent, userContent, stream, temperature, maxTokens, timeoutMs, onDelta, signal } = opts;
   const headers = { 'Content-Type': 'application/json' };
   if (authHeader && apiKey) {
@@ -1846,7 +1862,7 @@ async function dispatchByApiType(apiType, opts) {
   }
 }
 
-async function callLLM(skill, selection, onDelta, signal, runId) {
+async function callLLM(skill, selection, onDelta, signal, runId) { console.log('[FLOW] callLLM received runId=' + runId);
   const provider = getActiveProviderConfig();
   const userConfig = readProviderConfig();
 
@@ -1884,7 +1900,7 @@ async function callModel(skill, selection) {
   return callLLM(skill, selection, undefined);
 }
 
-async function callModelStreaming(skill, selection, onDelta, signal, runId) {
+async function callModelStreaming(skill, selection, onDelta, signal, runId) { console.log('[FLOW] callModelStreaming received runId=' + runId);
   const wrapped = (delta, fullText) => {
     if (signal?.aborted) return;
     onDelta(delta, fullText, runId);
@@ -2360,13 +2376,13 @@ async function runSkillInternal(skill, selectedText, store) {
   currentRunId = thisRunId;
   currentAbortController = new AbortController();
 
+  if (lastGlobalClick) { suppressNextOutsideClick = { runId: currentRunId, x: lastGlobalClick.x, y: lastGlobalClick.y, createdAt: Date.now(), consumed: false }; }
   console.log('[SkillRun] start runId=' + currentRunId + ' skillId=' + skill.id);
 
   overlayState = 'ai_generating';
-  hideToolbarViaCss();
+    hideToolbarViaCss();
   console.log('[Toolbar] hidden reason=skill-run');
   placeResultNearSelection();
-  resultInteractionUntil = Date.now() + 900;
   resultWindow.webContents.send('result:ready', { ...record, runId: currentRunId });
   console.log('[Result] show loading runId=' + currentRunId);
   resultWindow.showInactive();
@@ -2379,9 +2395,9 @@ async function runSkillInternal(skill, selectedText, store) {
       const nextText = fullText || `${record.answerMarkdown}${_delta || ''}`;
       record = { ...record, answerMarkdown: nextText };
       if (resultWindow && !resultWindow.isDestroyed()) {
-        resultWindow.webContents.send('result:update', { ...record, runId: currentRunId });
+        resultWindow.webContents.send('result:update', { ...record, runId: callbackRunId });
       }
-    });
+    }, currentAbortController.signal, currentRunId);
     record = { ...record, providerId: result.providerId, model: result.model, prompt: result.prompt, answerMarkdown: result.answer, status: 'completed' };
     overlayState = 'result_visible';
   } catch (error) {

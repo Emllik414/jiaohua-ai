@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
@@ -1699,22 +1699,46 @@ function ResultView() {
   const [confirmText, setConfirmText] = useState('')
   const [confirmSkillId, setConfirmSkillId] = useState('')
   const runIdRef = useRef('')
+  const renderTiming = useRef<{ readyAt: number; firstUpdateAt: number; firstPaintAt: number; updateCount: number; doneAt: number; timer: any }>({ readyAt: 0, firstUpdateAt: 0, firstPaintAt: 0, updateCount: 0, doneAt: 0, timer: null })
   const resultCardRef = useRef<HTMLDivElement>(null)
   const resultDragRef = useRef({ active: false, startX: 0, startY: 0, winX: 0, winY: 0 })
 
   useEffect(() => {
     const offReady = window.desktopApi.onResultReady((next) => {
       runIdRef.current = next.runId || ''
+      renderTiming.current = { readyAt: Date.now(), firstUpdateAt: 0, firstPaintAt: 0, updateCount: 0, doneAt: 0, timer: null }
+      if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] result:ready runId=' + next.runId); console.log('[RenderTiming] result:ready runId=' + next.runId)
       setRecord(next)
       setSourceExpanded(false)
       setFooterMoreOpen(false)
     })
     const offUpdate = window.desktopApi.onResultUpdate((next) => {
-      if (next.runId && next.runId !== runIdRef.current) {
+      if (next.runId !== undefined && next.runId !== runIdRef.current) {
         console.log('[Result] update ignored stale runId=' + next.runId + ' currentRunId=' + runIdRef.current);
         return
       }
+      var t = renderTiming.current;
+      t.updateCount++;
+      if (t.firstUpdateAt === 0) {
+        t.firstUpdateAt = Date.now();
+        if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] first result:update received runId=' + runIdRef.current + ' delayFromReady=' + (t.firstUpdateAt - t.readyAt) + 'ms'); console.log('[RenderTiming] first result:update received runId=' + runIdRef.current + ' delayFromReady=' + (t.firstUpdateAt - t.readyAt) + 'ms');
+        if (t.timer === null) {
+          t.timer = setInterval(function() {
+            var rt = renderTiming.current;
+            if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] 500ms stats runId=' + runIdRef.current + ' updates=' + rt.updateCount + ' elapsed=' + (Date.now() - rt.readyAt) + 'ms'); console.log('[RenderTiming] 500ms stats runId=' + runIdRef.current + ' updates=' + rt.updateCount + ' elapsed=' + (Date.now() - rt.readyAt) + 'ms');
+          }, 500);
+        }
+      }
       setRecord(next)
+      if (t.firstUpdateAt > 0 && t.firstPaintAt === 0) {
+        requestAnimationFrame(function() {
+          var rt = renderTiming.current;
+          if (rt.firstPaintAt === 0) {
+            rt.firstPaintAt = Date.now();
+            if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] first paint after update runId=' + runIdRef.current + ' delayFromUpdate=' + (rt.firstPaintAt - rt.firstUpdateAt) + 'ms'); console.log('[RenderTiming] first paint after update runId=' + runIdRef.current + ' delayFromUpdate=' + (rt.firstPaintAt - rt.firstUpdateAt) + 'ms');
+          }
+        });
+      }
     })
     const offConfirm = window.desktopApi.onConfirmSelection((payload) => {
       setRecord(payload.record)
@@ -1722,6 +1746,8 @@ function ResultView() {
       setConfirmSkillId(payload.skillId)
     })
     const offReset = window.desktopApi.onResultReset(() => {
+      if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] result:reset prevRunId=' + runIdRef.current); console.log('[RenderTiming] result:reset prevRunId=' + runIdRef.current);
+      if (renderTiming.current.timer) { clearInterval(renderTiming.current.timer); renderTiming.current.timer = null; }
       runIdRef.current = ''
       setRecord(null)
       setSourceExpanded(false)
