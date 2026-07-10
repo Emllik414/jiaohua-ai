@@ -2284,3 +2284,106 @@ textarea.template-textarea,
 :root[data-appearance='dark'] .template-editor-head p,
 :root[data-appearance='dark'] .vault-card p,
 :root[data-appearance='dark'] .subtle { color: var(--ui-muted); }
+
+/* ===== UI redesign v2.1: dark contrast and responsive containment ===== */
+html, body, #root, .main-window-wrap, .main-glass-window { overflow: hidden !important; }
+.main-glass-window, .main-panel, .history-layout, .api-layout, .obsidian-layout,
+.records-pane, .api-config-card, .template-editor-card, .skill-modal,
+.skill-modal-body, .skill-modal-grid, .skill-modal-field { min-width: 0; }
+.main-panel { overscroll-behavior: contain; scrollbar-width: thin; }
+.skill-modal-body { overflow-x: hidden; }
+.skill-icon-popover { max-width: min(326px, calc(100vw - 48px)); }
+.skill-icon-grid { grid-template-columns: repeat(auto-fit, minmax(38px, 1fr)); }
+
+:root[data-appearance='dark'] {
+  color: var(--ui-text);
+}
+:root[data-appearance='dark'] .history-page,
+:root[data-appearance='dark'] .api-page,
+:root[data-appearance='dark'] .obsidian-page,
+:root[data-appearance='dark'] .skill-modal,
+:root[data-appearance='dark'] .skill-modal-title,
+:root[data-appearance='dark'] .record-card,
+:root[data-appearance='dark'] .record-preview,
+:root[data-appearance='dark'] .record-source-text,
+:root[data-appearance='dark'] .markdown-body,
+:root[data-appearance='dark'] .conversation-item-title,
+:root[data-appearance='dark'] .form-row,
+:root[data-appearance='dark'] .form-row label,
+:root[data-appearance='dark'] .radio-label,
+:root[data-appearance='dark'] .skill-modal-field label,
+:root[data-appearance='dark'] .hotkey-toggle { color: var(--ui-text); }
+
+:root[data-appearance='dark'] .record-time,
+:root[data-appearance='dark'] .record-card-arrow,
+:root[data-appearance='dark'] .record-source-label,
+:root[data-appearance='dark'] .record-answer-label,
+:root[data-appearance='dark'] .conversation-item-meta,
+:root[data-appearance='dark'] .conv-date-label,
+:root[data-appearance='dark'] .prompt-help,
+:root[data-appearance='dark'] .template-vars-hint,
+:root[data-appearance='dark'] .api-hint,
+:root[data-appearance='dark'] .api-saved,
+:root[data-appearance='dark'] .provider-item span,
+:root[data-appearance='dark'] .skill-row-desc,
+:root[data-appearance='dark'] .skill-system-note { color: #b7b8c5; }
+
+:root[data-appearance='dark'] .record-skill-badge,
+:root[data-appearance='dark'] .pill.purple,
+:root[data-appearance='dark'] .token,
+:root[data-appearance='dark'] .hotkey-current { color: #c7c0ff; background: rgba(168,156,255,.15); }
+
+:root[data-appearance='dark'] .skill-icon-trigger,
+:root[data-appearance='dark'] .skill-icon-popover,
+:root[data-appearance='dark'] .skill-icon-option,
+:root[data-appearance='dark'] .skill-input-wrap,
+:root[data-appearance='dark'] .skill-prompt-textarea,
+:root[data-appearance='dark'] .skill-modal-footer,
+:root[data-appearance='dark'] .prompt-example,
+:root[data-appearance='dark'] .skill-var-token,
+:root[data-appearance='dark'] .radio-group,
+:root[data-appearance='dark'] .token-row,
+:root[data-appearance='dark'] .api-advanced,
+:root[data-appearance='dark'] .model-add-row input {
+  color: var(--ui-text);
+  border-color: var(--ui-border);
+  background: #292a34;
+}
+:root[data-appearance='dark'] .skill-icon-popover-head,
+:root[data-appearance='dark'] .skill-icon-option { color: #e6e6ee; }
+:root[data-appearance='dark'] .skill-icon-option:hover,
+:root[data-appearance='dark'] .skill-icon-option.active { color: #c7c0ff; border-color: rgba(168,156,255,.45); background: rgba(168,156,255,.14); }
+:root[data-appearance='dark'] .skill-vars { color: var(--ui-text); border-color: rgba(168,156,255,.2); background: rgba(168,156,255,.07); }
+:root[data-appearance='dark'] .skill-vars-title { color: #c7c0ff; }
+:root[data-appearance='dark'] .skill-var-row { color: #c2c3ce; }
+:root[data-appearance='dark'] .skill-modal-close { color: #d8d8e2; background: rgba(255,255,255,.06); }
+:root[data-appearance='dark'] .skill-modal-footer .primary { color: #fff; background: #6757e8; }
+:root[data-appearance='dark'] input::placeholder,
+:root[data-appearance='dark'] textarea::placeholder { color: #858693; }
+
+@media (max-width: 960px) {
+  .main-window-wrap { padding: 8px; }
+  .main-glass-window { grid-template-columns: 190px minmax(0, 1fr); border-radius: 22px; }
+  .sidebar { padding: 18px 14px; gap: 16px; }
+  .sidebar .brand-title { font-size: 14px; }
+  .sidebar .brand-sub { font-size: 10px; }
+  .main-panel { padding: 18px; }
+  .history-layout, .api-layout, .obsidian-layout { grid-template-columns: minmax(180px, 230px) minmax(0, 1fr); gap: 12px; }
+  .skill-modal { width: min(720px, calc(100vw - 28px)); max-height: calc(100vh - 28px); border-radius: 22px; }
+  .skill-modal-grid { grid-template-columns: minmax(0, 1fr) 112px; }
+}
+
+@media (max-width: 720px) {
+  .main-glass-window { grid-template-columns: 72px minmax(0, 1fr); }
+  .sidebar { padding: 14px 10px; align-items: stretch; }
+  .sidebar .brand { justify-content: center; }
+  .sidebar .brand > div:last-child, .nav-item > span:last-child,
+  .appearance-trigger span, .appearance-trigger em, .hotkey-card, .version { display: none; }
+  .nav-item { justify-content: center; padding: 0; }
+  .appearance-trigger { display: grid; grid-template-columns: 1fr; place-items: center; padding: 0; }
+  .appearance-menu { left: 0; width: 180px; right: auto; }
+  .history-layout, .api-layout, .obsidian-layout { grid-template-columns: 1fr; }
+  .conversation-pane, .provider-pane, .template-pane { max-height: 220px; overflow: auto; }
+  .skill-modal-grid { grid-template-columns: minmax(0, 1fr); }
+  .skill-icon-popover { position: fixed; left: 50%; right: auto; top: 50%; transform: translate(-50%, -50%); width: min(360px, calc(100vw - 32px)); }
+}
