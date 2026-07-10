@@ -527,6 +527,46 @@ function routeUrl(route) {
   return `${appUrl}${separator}route=${route}`;
 }
 
+function installTextEditContextMenu(win, scope = 'window') {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.on('context-menu', (event, params) => {
+    const editFlags = params.editFlags || {};
+    const hasSelection = Boolean(params.selectionText && params.selectionText.length > 0);
+    const isEditable = Boolean(params.isEditable);
+
+    if (!isEditable && !hasSelection) return;
+
+    const template = [];
+
+    if (isEditable) {
+      template.push(
+        { label: '撤销', role: 'undo', enabled: Boolean(editFlags.canUndo) },
+        { label: '重做', role: 'redo', enabled: Boolean(editFlags.canRedo) },
+        { type: 'separator' },
+        { label: '剪切', role: 'cut', enabled: Boolean(editFlags.canCut) },
+        { label: '复制', role: 'copy', enabled: Boolean(editFlags.canCopy || hasSelection) },
+        { label: '粘贴', role: 'paste', enabled: Boolean(editFlags.canPaste) },
+        { label: '粘贴为纯文本', role: 'pasteAndMatchStyle', enabled: Boolean(editFlags.canPaste) },
+        { label: '删除', role: 'delete', enabled: Boolean(editFlags.canDelete) },
+        { type: 'separator' },
+        { label: '全选', role: 'selectAll', enabled: Boolean(editFlags.canSelectAll !== false) }
+      );
+    } else {
+      template.push(
+        { label: '复制', role: 'copy', enabled: true },
+        { type: 'separator' },
+        { label: '全选', role: 'selectAll', enabled: Boolean(editFlags.canSelectAll !== false) }
+      );
+    }
+
+    try {
+      Menu.buildFromTemplate(template).popup({ window: win });
+    } catch (error) {
+      console.warn('[ContextMenu] popup failed scope=' + scope, error);
+    }
+  });
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1120,
@@ -543,6 +583,7 @@ function createMainWindow() {
     },
   });
   mainWindow.loadURL(routeUrl('main'));
+  installTextEditContextMenu(mainWindow, 'main');
   mainWindow.on('focus', () => {
     disableToolbarWindowsForMain('main-focus');
   });

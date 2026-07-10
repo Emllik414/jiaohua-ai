@@ -1889,11 +1889,15 @@ function ToolbarMoreView() {
   }, [])
 
   const moreSkills = buildMoreMenuSkills(skills, '')
-  const run = async (skillId: string) => {
+  const run = (skillId: string) => {
     setBusySkill(skillId)
-    await window.desktopApi.hideToolbarMore()
-    await window.desktopApi.runSkill(skillId)
-    setBusySkill('')
+    // Do not destroy toolbarMoreWindow before dispatching runSkill.
+    // In the destroy-on-hide lifecycle, hideToolbarMore() destroys this renderer window.
+    // If we await it first, the following runSkill() never gets sent and the result card will not appear.
+    void window.desktopApi.runSkill(skillId).catch((error) => {
+      console.error('[ToolbarMore] runSkill failed', error)
+      setBusySkill('')
+    })
   }
 
   return (
@@ -1902,7 +1906,7 @@ function ToolbarMoreView() {
       busySkill={busySkill}
       open={open}
       onRunSkill={run}
-      onSettings={async () => { await window.desktopApi.hideToolbarMore(); await window.desktopApi.showMain() }}
+      onSettings={() => { void window.desktopApi.showMain() }}
       onPointerEnter={() => window.desktopApi.setToolbarMorePointerInside(true)}
       onPointerLeave={() => window.desktopApi.setToolbarMorePointerInside(false)}
     />
