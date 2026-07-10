@@ -158,6 +158,7 @@ let speakToken = 0;
 let currentTtsKey = '';
 let selectionHelperProcess = null;
 let toolbarHideTimer = null;
+let toolbarHideGeneration = 0;
 let toolbarPointerInside = false;
 let toolbarMorePointerInside = false;
 let resultPointerInside = false;
@@ -171,6 +172,7 @@ let currentRunId = null;
 let currentAbortController = null;
 let toolbarPositionMode = 'auto';       // 'auto' | 'manual'
 let toolbarManualPosition = { x: 0, y: 0 };
+let toolbarSuppressMoveSync = false;
 let resultPositionMode = 'auto';        // 'auto' | 'manual'
 
 // ─── Hotkey config (separate from store.json for fast read) ───
@@ -541,6 +543,38 @@ function createMainWindow() {
     },
   });
   mainWindow.loadURL(routeUrl('main'));
+  mainWindow.on('focus', () => {
+    disableToolbarWindowsForMain('main-focus');
+  });
+  mainWindow.on('show', () => {
+    disableToolbarWindowsForMain('main-show');
+  });
+}
+
+
+function setToolbarWindowBounds(bounds, animate = false) {
+  if (!toolbarWindow || toolbarWindow.isDestroyed()) return;
+  toolbarSuppressMoveSync = true;
+  try {
+    toolbarWindow.setBounds(bounds, animate);
+  } finally {
+    setTimeout(() => { toolbarSuppressMoveSync = false; }, 80);
+  }
+}
+
+function syncToolbarManualPositionFromNativeMove(reason = 'native-move') {
+  if (!toolbarWindow || toolbarWindow.isDestroyed()) return;
+  if (toolbarSuppressMoveSync) return;
+  if (overlayState !== 'toolbar_visible') return;
+  try {
+    const bounds = toolbarWindow.getBounds();
+    toolbarPositionMode = 'manual';
+    toolbarManualPosition = {
+      x: bounds.x,
+      y: bounds.y + TOOLBAR_TOOLTIP_TOP_SPACE,
+    };
+    if (toolbarExpanded) hideToolbarMore();
+  } catch (_) {}
 }
 
 function createToolbarWindow() {
@@ -571,6 +605,11 @@ function createToolbarWindow() {
     }
   });
   toolbarWindow._visualHeight = TOOLBAR_VISUAL_HEIGHT;
+  toolbarWindow.on('move', () => syncToolbarManualPositionFromNativeMove('move'));
+  toolbarWindow.on('moved', () => syncToolbarManualPositionFromNativeMove('moved'));
+  toolbarWindow.on('closed', () => {
+    toolbarWindow = null;
+  });
 }
 
 function createToolbarMoreWindow() {
@@ -594,6 +633,42 @@ function createToolbarMoreWindow() {
     },
   });
   toolbarMoreWindow.loadURL(routeUrl('toolbar-more'));
+  toolbarMoreWindow.on('closed', () => {
+    toolbarMoreWindow = null;
+  });
+}
+
+function waitForWindowReady(win, timeoutMs = 1600) {
+  if (!win || win.isDestroyed()) return Promise.resolve(false);
+  if (!win.webContents.isLoading()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { win.webContents.removeListener('did-finish-load', onFinish); } catch (_) {}
+      try { win.webContents.removeListener('did-fail-load', onFail); } catch (_) {}
+      resolve(ok);
+    };
+    const onFinish = () => finish(true);
+    const onFail = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    try { win.webContents.once('did-finish-load', onFinish); } catch (_) { finish(false); }
+    try { win.webContents.once('did-fail-load', onFail); } catch (_) {}
+  });
+}
+
+async function ensureToolbarWindowReady() {
+  if (!toolbarWindow || toolbarWindow.isDestroyed()) createToolbarWindow();
+  await waitForWindowReady(toolbarWindow);
+  return toolbarWindow && !toolbarWindow.isDestroyed() ? toolbarWindow : null;
+}
+
+async function ensureToolbarMoreWindowReady() {
+  if (!toolbarMoreWindow || toolbarMoreWindow.isDestroyed()) createToolbarMoreWindow();
+  await waitForWindowReady(toolbarMoreWindow);
+  return toolbarMoreWindow && !toolbarMoreWindow.isDestroyed() ? toolbarMoreWindow : null;
 }
 
 function createResultWindow() {
@@ -637,6 +712,7 @@ function createTray() {
 
 function showMain() {
   console.log('[Tray] open main window clicked');
+  disableToolbarWindowsForMain('show-main');
   if (!mainWindow || mainWindow.isDestroyed()) {
     createMainWindow();
   }
@@ -832,8 +908,25 @@ function placeToolbarNearSelection() {
   const display = screen.getDisplayNearestPoint({ x: anchorRect.x + anchorRect.width / 2, y: anchorRect.y + anchorRect.height / 2 });
   let bounds;
   if (toolbarPositionMode === 'manual') {
+    // toolbarManualPosition stores the VISIBLE toolbar top-left, not the real BrowserWindow top-left.
+    // The BrowserWindow has a transparent tooltip area above the visible toolbar, so convert only
+    // after clamping the visible rect. This keeps dragging under the cursor and avoids edge jumps.
+    const manualDisplay = screen.getDisplayNearestPoint({
+      x: toolbarManualPosition.x + width / 2,
+      y: toolbarManualPosition.y + visualHeight / 2,
+    });
+    const visual = clampWindowToWorkArea(
+      toolbarManualPosition.x,
+      toolbarManualPosition.y,
+      width,
+      visualHeight,
+      manualDisplay.workArea,
+      8
+    );
+    toolbarManualPosition = { x: visual.x, y: visual.y };
     bounds = {
-      ...clampWindowToWorkArea(toolbarManualPosition.x, toolbarManualPosition.y, width, windowHeight, display.workArea, 8),
+      x: visual.x,
+      y: visual.y - TOOLBAR_TOOLTIP_TOP_SPACE,
       width,
       height: windowHeight,
     };
@@ -851,7 +944,7 @@ function placeToolbarNearSelection() {
       height: windowHeight,
     };
   }
-  toolbarWindow.setBounds(bounds, false);
+  setToolbarWindowBounds(bounds, false);
 }
 
 function placeResultNearSelection() {
@@ -1327,6 +1420,7 @@ function handleSelectionHelperLine(line) {
     endX: end.x,
     endY: end.y,
   };
+  if (shouldIgnoreSelectionFromFloatingToolbar(meta, foregroundProcessName, foregroundWindowTitle)) return;
   lastSelectionRect = makeSelectionRect(meta);
   const clipboardText = Buffer.from(encoded, 'base64').toString('utf8').trim();
   const rawText = clipboardText;
@@ -1434,7 +1528,7 @@ function showToolbarForText(selected) {
  * This is the canonical way to show the toolbar — always call this
  * instead of showToolbarForText() directly.
  */
-function showToolbarForPicked(picked) {
+async function showToolbarForPicked(picked) {
     console.log('[Debug] showToolbarForPicked enter', JSON.stringify({ hasPicked: !!picked, textLen: picked && picked.text ? picked.text.length : 0, source: picked && picked.source, confidence: picked && picked.confidence, expired: picked && picked._expired, sessionId: picked && picked._sessionId }));
   // Session guards
   if (!picked || picked._expired) {
@@ -1492,10 +1586,11 @@ const aid = _perfAttemptId || '';
   toolbarMorePointerInside = false;
   toolbarExpanded = false;
   toolbarInteractionUntil = Date.now() + 800;
-  if (!toolbarWindow) createToolbarWindow();
-  if (!toolbarMoreWindow) createToolbarMoreWindow();
+  await ensureToolbarWindowReady();
+  if (!toolbarWindow || toolbarWindow.isDestroyed()) return;
   placeToolbarNearSelection();
-  hideToolbarMore();
+  destroyToolbarMoreWindow('new-toolbar-show');
+  toolbarHideGeneration += 1;
   toolbarWindow.setIgnoreMouseEvents(false);
   if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'toolbar_show_inactive', durationMs: Date.now() - _tbStart, textLen: text.length, attemptId: aid }));
   console.log('[Toolbar] before showInactive', JSON.stringify({ textLen: text.length, source: picked.source }));
@@ -1586,6 +1681,130 @@ function makeSelectionRect(meta) {
   const bottom = Math.round(centerY + height / 2);
   return { left, right, top, bottom, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
 }
+function pointInWindowBounds(point, bounds, pad = 0) {
+  if (!point || !bounds) return false;
+  return point.x >= bounds.x - pad &&
+    point.x <= bounds.x + bounds.width + pad &&
+    point.y >= bounds.y - pad &&
+    point.y <= bounds.y + bounds.height + pad;
+}
+
+function selectionRectIntersectsBounds(meta, bounds, pad = 0) {
+  if (!meta || !bounds) return false;
+  const left = Math.min(meta.startX, meta.endX);
+  const right = Math.max(meta.startX, meta.endX);
+  const top = Math.min(meta.startY, meta.endY);
+  const bottom = Math.max(meta.startY, meta.endY);
+  return right >= bounds.x - pad &&
+    left <= bounds.x + bounds.width + pad &&
+    bottom >= bounds.y - pad &&
+    top <= bounds.y + bounds.height + pad;
+}
+
+function shouldIgnoreSelectionFromFloatingToolbar(meta, foregroundProcessName = '', foregroundWindowTitle = '') {
+  // The global WH_MOUSE_LL hook sees dragging the floating toolbar as a normal mouse drag.
+  // If we let that drag enter the selection pipeline, showToolbarForPicked() will auto-place
+  // the toolbar near the stale clipboard/selection and the toolbar appears to "jump".
+  const toolbarVisible = toolbarWindow && !toolbarWindow.isDestroyed() && toolbarWindow.isVisible();
+  const moreVisible = toolbarMoreWindow && !toolbarMoreWindow.isDestroyed() && toolbarMoreWindow.isVisible();
+  if (!toolbarVisible && !moreVisible) return false;
+
+  const start = { x: meta.startX, y: meta.startY };
+  const end = { x: meta.endX, y: meta.endY };
+  const toolbarBounds = toolbarVisible ? toolbarWindow.getBounds() : null;
+  const moreBounds = moreVisible ? toolbarMoreWindow.getBounds() : null;
+  const toolbarPad = 10;
+  const morePad = 8;
+
+  const hitToolbar = toolbarBounds && (
+    pointInWindowBounds(start, toolbarBounds, toolbarPad) ||
+    pointInWindowBounds(end, toolbarBounds, toolbarPad) ||
+    selectionRectIntersectsBounds(meta, toolbarBounds, toolbarPad)
+  );
+  const hitMore = moreBounds && (
+    pointInWindowBounds(start, moreBounds, morePad) ||
+    pointInWindowBounds(end, moreBounds, morePad) ||
+    selectionRectIntersectsBounds(meta, moreBounds, morePad)
+  );
+
+  if (hitToolbar || hitMore) {
+    console.log('[ToolbarDrag] ignored SELECTED from floating toolbar drag', JSON.stringify({
+      start,
+      end,
+      toolbarBounds,
+      moreBounds,
+      hitToolbar: Boolean(hitToolbar),
+      hitMore: Boolean(hitMore),
+      foregroundProcessName,
+      foregroundWindowTitle,
+      overlayState,
+    }));
+    return true;
+  }
+  return false;
+}
+
+
+
+function destroyToolbarWindow(reason = 'unknown') {
+  toolbarHideGeneration += 1;
+  const generation = toolbarHideGeneration;
+
+  toolbarPointerInside = false;
+  toolbarMorePointerInside = false;
+  toolbarExpanded = false;
+  toolbarInteractionUntil = 0;
+
+  if (!toolbarWindow || toolbarWindow.isDestroyed()) {
+    toolbarWindow = null;
+    return;
+  }
+
+  const bounds = (() => {
+    try { return toolbarWindow.getBounds(); } catch (_) { return null; }
+  })();
+
+  try { toolbarWindow.webContents.send('toolbar:hide'); } catch (_) {}
+  try { toolbarWindow.setIgnoreMouseEvents(true, { forward: true }); } catch (_) {}
+  try { toolbarWindow.removeAllListeners('move'); } catch (_) {}
+  try { toolbarWindow.removeAllListeners('resize'); } catch (_) {}
+  try { toolbarWindow.destroy(); } catch (_) {}
+  toolbarWindow = null;
+
+  console.log('[Toolbar] destroyed on hide', {
+    reason,
+    generation,
+    bounds,
+  });
+}
+
+function destroyToolbarMoreWindow(reason = 'unknown') {
+  toolbarExpanded = false;
+  toolbarMorePointerInside = false;
+
+  if (toolbarMoreWindow && !toolbarMoreWindow.isDestroyed()) {
+    const bounds = (() => {
+      try { return toolbarMoreWindow.getBounds(); } catch (_) { return null; }
+    })();
+    try { toolbarMoreWindow.webContents.send('toolbar-more:state', { open: false }); } catch (_) {}
+    try { toolbarMoreWindow.setIgnoreMouseEvents(true, { forward: true }); } catch (_) {}
+    try { toolbarMoreWindow.removeAllListeners('move'); } catch (_) {}
+    try { toolbarMoreWindow.removeAllListeners('resize'); } catch (_) {}
+    try { toolbarMoreWindow.destroy(); } catch (_) {}
+    toolbarMoreWindow = null;
+    console.log('[ToolbarMore] destroyed on hide', { reason, bounds });
+  }
+  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+    try { toolbarWindow.webContents.send('toolbar-more:state', { open: false }); } catch (_) {}
+  }
+}
+
+function disableToolbarWindowsForMain(reason = 'main-active') {
+  // When the main settings window is active, floating toolbar windows must not
+  // remain as invisible mouse blockers above it.
+  destroyToolbarMoreWindow(reason);
+  destroyToolbarWindow(reason);
+}
 
 function explicitCloseResultCard(reason) {
   const allowed = new Set(['close-button', 'escape', 'explicit-user-action', 'outside-click']);
@@ -1609,22 +1828,14 @@ function explicitCloseResultCard(reason) {
 
 function hideToolbarViaCss() {
   clearTimeout(toolbarHideTimer);
-
-  toolbarPointerInside = false;
-  toolbarMorePointerInside = false;
-  toolbarExpanded = false;
-  toolbarInteractionUntil = 0;
-
-  hideToolbarMore();
-  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
-    toolbarWindow.webContents.send('toolbar:hide');
-    toolbarWindow.setIgnoreMouseEvents(true, { forward: true });
-  }
+  destroyToolbarMoreWindow('hide-toolbar');
+  destroyToolbarWindow('hide-toolbar');
 }
 
-function showToolbarMore() {
+async function showToolbarMore() {
   if (!toolbarWindow || toolbarWindow.isDestroyed()) return { ok: false, open: false };
-  if (!toolbarMoreWindow || toolbarMoreWindow.isDestroyed()) createToolbarMoreWindow();
+  await ensureToolbarMoreWindowReady();
+  if (!toolbarMoreWindow || toolbarMoreWindow.isDestroyed()) return { ok: false, open: false };
   toolbarExpanded = true;
   toolbarMorePointerInside = false;
   placeToolbarMoreNearToolbar();
@@ -1637,19 +1848,11 @@ function showToolbarMore() {
 }
 
 function hideToolbarMore() {
-  toolbarExpanded = false;
-  toolbarMorePointerInside = false;
-  if (toolbarMoreWindow && !toolbarMoreWindow.isDestroyed()) {
-    toolbarMoreWindow.webContents.send('toolbar-more:state', { open: false });
-    toolbarMoreWindow.hide();
-  }
-  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
-    toolbarWindow.webContents.send('toolbar-more:state', { open: false });
-  }
+  destroyToolbarMoreWindow('hide-toolbar-more');
   return { ok: true, open: false };
 }
 
-function toggleToolbarMore() {
+async function toggleToolbarMore() {
   if (toolbarMoreWindow && !toolbarMoreWindow.isDestroyed() && toolbarMoreWindow.isVisible()) {
     return hideToolbarMore();
   }
@@ -2636,6 +2839,14 @@ ipcMain.handle('window:show-main', () => {
 ipcMain.handle('window:close-current', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win && resultWindow && win.id === resultWindow.id) return explicitCloseResultCard('close-button');
+  if (win && toolbarWindow && win.id === toolbarWindow.id) {
+    hideToolbarViaCss();
+    return { ok: true };
+  }
+  if (win && toolbarMoreWindow && win.id === toolbarMoreWindow.id) {
+    hideToolbarMore();
+    return { ok: true };
+  }
   if (win) win.hide();
   return { ok: true };
 });
@@ -2652,15 +2863,15 @@ ipcMain.handle('toolbar:pointer-inside', (_event, inside) => {
   if (toolbarPointerInside) scheduleToolbarHide();
   return { ok: true };
 });
-function resizeToolbar(expanded) {
-  if (expanded) showToolbarMore();
-  else hideToolbarMore();
+async function resizeToolbar(expanded) {
+  if (expanded) return showToolbarMore();
+  return hideToolbarMore();
 }
-ipcMain.handle('toolbar:resize', (_event, expanded) => {
-  resizeToolbar(Boolean(expanded));
+ipcMain.handle('toolbar:resize', async (_event, expanded) => {
+  await resizeToolbar(Boolean(expanded));
   return { ok: true };
 });
-ipcMain.handle('toolbar-more:toggle', (_event, anchor) => { console.log('[main toggle] anchor received:', JSON.stringify(anchor)); toolbarMoreAnchor = anchor || null; return toggleToolbarMore(); });
+ipcMain.handle('toolbar-more:toggle', async (_event, anchor) => { console.log('[main toggle] anchor received:', JSON.stringify(anchor)); toolbarMoreAnchor = anchor || null; return toggleToolbarMore(); });
 ipcMain.handle('toolbar-more:hide', () => hideToolbarMore());
 ipcMain.handle('toolbar-more:pointer-inside', (_event, inside) => {
   toolbarMorePointerInside = Boolean(inside);
@@ -2684,7 +2895,7 @@ ipcMain.handle('toolbar:set-size', (_event, size) => {
   if (toolbarPositionMode === 'auto' && currentAnchorRect) {
     placeToolbarNearSelection();
   } else {
-    toolbarWindow.setBounds({ x: bounds.x, y: bounds.y, width: nextWidth, height: nextHeight }, false);
+    setToolbarWindowBounds({ x: bounds.x, y: bounds.y, width: nextWidth, height: nextHeight }, false);
   }
   return { ok: true, width: nextWidth, height: nextHeight };
 });
@@ -2695,13 +2906,34 @@ ipcMain.handle('toolbar:set-position', (_event, pos) => {
     toolbarPositionMode = 'auto';
     return { ok: true };
   }
-  // Manual position: save and move. Use visual height for clamping, preserve real height.
+
+  // Manual position is based on the VISIBLE toolbar top-left.
+  // The real BrowserWindow is taller because of the transparent tooltip area above the toolbar.
+  // If we clamp/move the real window directly, the visible capsule will jump away from the cursor.
   toolbarPositionMode = 'manual';
-  toolbarManualPosition = { x: Number(pos.x), y: Number(pos.y) };
-  const display = screen.getDisplayNearestPoint({ x: toolbarManualPosition.x, y: toolbarManualPosition.y });
-  const clamped = clampWindowToWorkArea(toolbarManualPosition.x, toolbarManualPosition.y, toolbarFixedWidth, TOOLBAR_FIXED_HEIGHT, display.workArea, 8);
-  console.log('drag move', { x: clamped.x, y: clamped.y, width: toolbarFixedWidth, height: TOOLBAR_FIXED_HEIGHT });
-  toolbarWindow.setBounds({ x: clamped.x, y: clamped.y, width: toolbarFixedWidth, height: TOOLBAR_FIXED_HEIGHT }, false);
+  const visualX = Number(pos.x);
+  const visualY = Number(pos.y);
+  toolbarManualPosition = { x: visualX, y: visualY };
+
+  const display = screen.getDisplayNearestPoint({
+    x: visualX + toolbarFixedWidth / 2,
+    y: visualY + TOOLBAR_VISUAL_HEIGHT / 2,
+  });
+  const visual = clampWindowToWorkArea(
+    visualX,
+    visualY,
+    toolbarFixedWidth,
+    TOOLBAR_VISUAL_HEIGHT,
+    display.workArea,
+    8
+  );
+  toolbarManualPosition = { x: visual.x, y: visual.y };
+  setToolbarWindowBounds({
+    x: visual.x,
+    y: visual.y - TOOLBAR_TOOLTIP_TOP_SPACE,
+    width: toolbarFixedWidth,
+    height: TOOLBAR_FIXED_HEIGHT,
+  }, false);
   return { ok: true };
 });
 ipcMain.handle('result:pointer-inside', (_event, inside) => {
@@ -2844,14 +3076,9 @@ app.whenReady().then(() => {
   migrateUserDataIfNeeded();
   Menu.setApplicationMenu(null);
   createMainWindow();
-  createToolbarWindow();
-  createToolbarMoreWindow();
-  // Wait for page load before show + hide
-  toolbarWindow.webContents.once('did-finish-load', () => {
-    toolbarWindow.showInactive();
-    toolbarWindow.webContents.send('toolbar:hide');
-    toolbarWindow.setIgnoreMouseEvents(true, { forward: true });
-  });
+  // Toolbar windows are intentionally created only when a real selection occurs.
+  // When the toolbar is dismissed, the BrowserWindow is destroyed instead of hidden,
+  // so it cannot remain as an invisible mouse blocker above the main UI.
   createResultWindow();
   createTray();
   // Apply hotkey config (defaults: enabled=true, key=Alt+Q)

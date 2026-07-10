@@ -25,7 +25,6 @@ export function Toolbar({
   toolbarRef,
   shellRef,
   onRunSkill,
-  onGripDown,
   onPointerEnter,
   onPointerLeave,
 }: ToolbarProps) {
@@ -49,10 +48,10 @@ export function Toolbar({
       onMouseLeave={onPointerLeave}
     >
       <div ref={toolbarRef} className="toolbar-shell">
-        <button className="drag-handle" onMouseDown={onGripDown} aria-label="拖拽" type="button">
+        <div className="drag-handle" aria-label="拖拽" role="button">
           <svg viewBox="0 0 12 18" width="14" height="18"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/><circle cx="3" cy="15" r="1.4"/><circle cx="9" cy="15" r="1.4"/></svg>
           <span className="toolbar-tooltip" role="tooltip">拖拽</span>
-        </button>
+        </div>
         {actions.map((action) => {
           if (action.kind === 'more') {
             return (

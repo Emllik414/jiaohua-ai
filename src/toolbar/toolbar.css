@@ -53,7 +53,9 @@
   box-sizing: border-box;
   overflow: visible;
   user-select: none;
+  -webkit-app-region: no-drag;
 }
+
 
 .toolbar-layer:not(.is-hidden) .toolbar-shell {
   animation: toolbarPop .32s cubic-bezier(.2,.9,.18,1.16);
@@ -85,7 +87,11 @@
   transition: .15s ease;
   padding: 0;
   flex: 0 0 24px;
+  -webkit-app-region: drag;
 }
+
+
+.drag-handle:active { cursor: grabbing; }
 
 .drag-handle:hover {
   background: rgba(241, 245, 249, .72);
@@ -114,7 +120,9 @@
   transition: .15s ease;
   padding: 0;
   font-size: 15px;
+  -webkit-app-region: no-drag;
 }
+
 
 .tool-btn svg {
   width: 19px;
@@ -626,4 +634,18 @@
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+
+/* Native OS-level drag for the toolbar grip. This avoids JS/IPC coordinate drift. */
+.toolbar-layer,
+.toolbar-shell,
+.tool-btn,
+.toolbar-separator,
+.toolbar-tooltip {
+  -webkit-app-region: no-drag;
+}
+.drag-handle,
+.drag-handle svg {
+  -webkit-app-region: drag;
 }
