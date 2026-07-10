@@ -103,6 +103,56 @@ class SelectionProvider {
   }
 }
 
+
+function isBrowserForegroundProcess(context = {}) {
+  const pn = String(context?.foregroundProcessName || '').toLowerCase();
+  return /(chrome|msedge|firefox|brave|opera|browser)/.test(pn);
+}
+
+function getDragBoundsFromContext(context = {}) {
+  const a = context.rawCursorStart || context.cursorStart || null;
+  const b = context.rawCursorEnd || context.cursorEnd || null;
+  if (!a || !b) return null;
+  const ax = Number(a.x);
+  const ay = Number(a.y);
+  const bx = Number(b.x);
+  const by = Number(b.y);
+  if (![ax, ay, bx, by].every(Number.isFinite)) return null;
+  return {
+    left: Math.min(ax, bx),
+    right: Math.max(ax, bx),
+    top: Math.min(ay, by),
+    bottom: Math.max(ay, by),
+    width: Math.abs(bx - ax),
+    height: Math.abs(by - ay),
+  };
+}
+
+function isLikelyBrowserTopSelection(context = {}) {
+  if (!isBrowserForegroundProcess(context)) return false;
+  const drag = getDragBoundsFromContext(context);
+  if (!drag) return false;
+  // Chrome/Edge address bar and most site search boxes sit in the top band when
+  // the browser is maximized. This is intentionally conservative: it only turns
+  // off OCR/subtitle protection and allows Clipboard V2 fallback for top-band
+  // drags, which are exactly the address-bar / webpage-search-box gap.
+  return drag.top <= 280 && drag.height <= 140;
+}
+function hasOnlyEmptyBrowserMarkers(results = []) {
+  const all = results.filter(Boolean);
+  if (!all.length) return false;
+  return all.every((r) => r.source === 'browser' && !r.text);
+}
+
+function hasValidBrowserText(results = []) {
+  return results.some((r) => r && r.source === 'browser' && !!r.text);
+}
+
+function browserMissedSelection(results = [], context = {}) {
+  return isBrowserForegroundProcess(context) && !hasValidBrowserText(results);
+}
+
+
 // ─── BrowserProvider ──────────────────────────────────
 
 /**
@@ -116,6 +166,64 @@ class SelectionProvider {
  *   → main.cjs HTTP server 缓存 payload
  *   → BrowserProvider.pick() 读取缓存
  */
+
+function isBrowserPayloadCompatibleWithContext(payload, context = {}) {
+  if (!payload) return false;
+
+  const payloadAt = Number(payload._perfReceivedAt || 0);
+  const selectionAt = Number(context?._at || 0);
+  const attemptId = context?._perfAttemptId || '';
+  const method = payload.metadata?.method || '';
+  const isEmptyMarker = !payload.text && (payload.error || payload.metadata?.error || payload.metadata?.subtitleOverlayDetected);
+
+  // Address bar / top search-box selections cannot be represented by a page
+  // content-script payload. Never let an empty/stale subtitle marker block
+  // Clipboard V2 in this top browser band.
+  if (isEmptyMarker && isLikelyBrowserTopSelection(context)) {
+    if (PERF_LOGGING) console.log('[BrowserProvider] empty_marker_top_band_ignored', JSON.stringify({ attemptId, method }));
+    return false;
+  }
+
+  // Empty markers without a rect are too ambiguous. They are useful for video
+  // subtitle diagnostics, but unsafe as a blocker for address/search bar fallback.
+  if (isEmptyMarker && !payload.rect) {
+    if (PERF_LOGGING) console.log('[BrowserProvider] empty_marker_without_rect_ignored', JSON.stringify({ attemptId, method }));
+    return false;
+  }
+
+  // If this is clearly an old browser payload from a previous page selection,
+  // do not let it block the address-bar / browser-chrome Clipboard V2 fallback.
+  if (selectionAt > 0 && payloadAt > 0 && payloadAt < selectionAt - 250) {
+    if (PERF_LOGGING) console.log('[BrowserProvider] stale_payload_ignored', JSON.stringify({ attemptId, payloadAt, selectionAt, method }));
+    return false;
+  }
+
+  // When a payload has a rect, it must be near the current drag. This prevents
+  // stale webpage selections from winning when the user actually selected text
+  // in Chrome's address bar, which content scripts cannot access.
+  const rect = payload.rect;
+  if (rect && context.cursorStart && context.cursorEnd) {
+    const dragLeft = Math.min(context.cursorStart.x, context.cursorEnd.x);
+    const dragRight = Math.max(context.cursorStart.x, context.cursorEnd.x);
+    const dragTop = Math.min(context.cursorStart.y, context.cursorEnd.y);
+    const dragBottom = Math.max(context.cursorStart.y, context.cursorEnd.y);
+    const rectCx = Number(rect.x || 0) + Number(rect.width || 0) / 2;
+    const rectCy = Number(rect.y || 0) + Number(rect.height || 0) / 2;
+    const dragCx = (dragLeft + dragRight) / 2;
+    const dragCy = (dragTop + dragBottom) / 2;
+    const dist = Math.hypot(rectCx - dragCx, rectCy - dragCy);
+    const dragDiag = Math.hypot(dragRight - dragLeft, dragBottom - dragTop);
+    const threshold = Math.max(260, dragDiag * 2.0);
+    if (Number.isFinite(dist) && dist > threshold) {
+      if (PERF_LOGGING) console.log('[BrowserProvider] rect_mismatch_ignored', JSON.stringify({ attemptId, dist, threshold, method }));
+      return false;
+    }
+  }
+
+  return true;
+}
+
+
 class BrowserProvider extends SelectionProvider {
   get name() { return 'browser'; }
   get priority() { return 10; }
@@ -148,18 +256,19 @@ class BrowserProvider extends SelectionProvider {
     // SelectionEngine before the HTTP request lands. Poll-wait here.
     let p = this._getPayload();
     if (!p || !p.text) {
-      await sleep(50);
+      await sleep(35);
       p = this._getPayload();
     }
     if (!p || !p.text) {
-      await sleep(80);
+      await sleep(45);
       p = this._getPayload();
     }
     if (!p || !p.text) {
-      await sleep(70);
+      await sleep(55);
       p = this._getPayload();
     }
     if (!p) return null;
+    if (!isBrowserPayloadCompatibleWithContext(p, context)) return null;
 
     const metadata = {
       site: p.metadata?.site || '',
@@ -173,10 +282,15 @@ class BrowserProvider extends SelectionProvider {
       _perfReceivedAt: p._perfReceivedAt || 0,
     };
 
-    // Keep low-confidence browser markers. Third-party subtitle overlays can be
-    // visible to hit-testing but unreadable because of extension isolation.
-    // Dropping this marker lets ClipboardProvider win with a copied full line.
+    // Keep only *nearby* low-confidence browser markers. Third-party subtitle
+    // overlays can be visible to hit-testing but unreadable because of extension
+    // isolation. However, empty markers must not block address-bar / search-box
+    // Clipboard V2 fallback.
     if (!p.text && (metadata.subtitleOverlayDetected || metadata.error)) {
+      if (!p.rect || isLikelyBrowserTopSelection(context)) {
+        if (PERF_LOGGING) console.log('[BrowserProvider] empty_marker_not_returned', JSON.stringify({ attemptId: context?._perfAttemptId || '', method: metadata.method, hasRect: !!p.rect }));
+        return null;
+      }
       return {
         text: '',
         fullText: p.fullText || '',
@@ -1260,7 +1374,7 @@ function isPrecisionFastPath(result, context = {}) {
   const adapter = result.metadata?.adapter || '';
   const method = result.metadata?.method || '';
   const precisionAdapters = ['youtube-native-caption', 'trancy-caption'];
-  const precisionMethods = ['youtube-native-token-hit-test', 'trancy-subtitle-token-hit-test', 'window-selection'];
+  const precisionMethods = ['youtube-native-token-hit-test', 'trancy-subtitle-token-hit-test', 'window-selection', 'editable-input-selection', 'editable-textarea-selection', 'contenteditable-selection'];
 
   const isPrecisionAdapter = precisionAdapters.includes(adapter);
   const isPrecisionMethod = precisionMethods.includes(method);
@@ -1331,6 +1445,15 @@ function cloneWithClipboardDowngrade(candidate, confidence) {
 
 function shouldTryOcrProvider(results, context = {}) {
   if (context.forceOcr || context.preferOcr) return true;
+
+  // If the browser provider missed the selection, do NOT jump to OCR first.
+  // Browser search boxes, address bars, and CJK text selections are copied
+  // correctly by Ctrl+C, while OCR is slow and often mojibakes Chinese.
+  if (browserMissedSelection(results, context)) return false;
+
+  // Browser address bar / webpage top search boxes should never wait for OCR.
+  if (isLikelyBrowserTopSelection(context)) return false;
+
   if (hasSubtitleOverlayMarker(results.filter(Boolean))) return true;
   const processName = String(context.foregroundProcessName || '').toLowerCase();
   const title = String(context.foregroundWindowTitle || '').toLowerCase();
@@ -1344,12 +1467,30 @@ function shouldTryOcrProvider(results, context = {}) {
 }
 
 function shouldAvoidClipboardProvider(results, context = {}) {
-  if (hasSubtitleOverlayMarker(results.filter(Boolean))) return true;
-  const processName = String(context.foregroundProcessName || '').toLowerCase();
-  const title = String(context.foregroundWindowTitle || '').toLowerCase();
-  if (/(chrome|msedge|firefox)/.test(processName) && /(youtube|bilibili|netflix|trancy|tracy|字幕|视频|播放器|哔哩|b站)/.test(title)) {
-    return true;
-  }
+  // Empty browser markers are not trustworthy blockers. They are exactly what
+  // we see when a webpage search box / address bar / CJK selection is missed.
+  if (hasOnlyEmptyBrowserMarkers(results)) return false;
+
+  // Do not block Clipboard V2 in browser top-band selections. This fixes Chrome
+  // address bar and Bilibili/Google site search boxes. Page content scripts may
+  // fail there, but Ctrl+C normally works.
+  if (isLikelyBrowserTopSelection(context)) return false;
+
+  // If BrowserProvider tried but has no valid text, allow Clipboard V2 before OCR.
+  if (browserMissedSelection(results, context)) return false;
+
+  const all = results.filter(Boolean);
+  const hasNearbySubtitleMarker = all.some((r) => {
+    if (!r) return false;
+    const isMarker = r.metadata?.subtitleOverlayDetected || r.subtitleOverlayDetected || r.metadata?.error || r.error;
+    if (!isMarker) return false;
+    // Only avoid clipboard when the subtitle marker is spatially meaningful and
+    // we are not in the browser top band. This prevents an old Bilibili subtitle
+    // marker from blocking address/search box fallback.
+    return !!r.rect;
+  });
+  if (hasNearbySubtitleMarker) return true;
+
   return false;
 }
 

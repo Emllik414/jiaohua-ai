@@ -1,7 +1,7 @@
-﻿(function () {
+(function () {
   'use strict';
   // ????? Content script stability: version guard + AbortController ?????
-  var VERSION = '1.2.0';
+  var VERSION = '1.4.0-cjk-input-v3';
   if (window.__AISEL_BOOTSTRAPPED__ === VERSION) return;
   window.__AISEL_BOOTSTRAPPED__ = VERSION;
   var ac = new AbortController();
@@ -19,6 +19,7 @@
   var lastSelection = null;
   const DEBUG_PREFIX = '[AISel SubtitleOverlayProvider]';
   let mouseDown = null;
+  let lastEditableSelection = null;
 
   console.log(DEBUG_PREFIX, 'content script loaded', location.href);
 
@@ -41,6 +42,35 @@
     console.log(DEBUG_PREFIX, 'elementFromPoint(mouseDown)', mouseDown.elementFromPoint);
   }, { capture: true, signal });
 
+
+  function rememberEditableSelection(reason, event) {
+    try {
+      const point = event ? { x: event.clientX, y: event.clientY } : null;
+      const el = findEditableSelectionElement(event || null, point, point);
+      if (!el) return null;
+      const result = resolveEditableSelectionFromElement(el);
+      if (result && result.text) {
+        lastEditableSelection = { result, at: Date.now(), reason };
+        console.log(DEBUG_PREFIX, 'cached editable selection', reason, result.metadata && result.metadata.method, result.text.length);
+        return result;
+      }
+    } catch (err) {
+      console.log(DEBUG_PREFIX, 'rememberEditableSelection error', err && err.message);
+    }
+    return null;
+  }
+
+  document.addEventListener('select', (event) => {
+    rememberEditableSelection('select-event', event);
+  }, { capture: true, signal });
+
+  document.addEventListener('selectionchange', () => {
+    // `selectionchange` also fires for input/textarea selections in Chromium.
+    // Caching it makes CJK search boxes more reliable because some sites move
+    // focus or wrap the input during mouseup.
+    rememberEditableSelection('selectionchange', null);
+  }, { capture: true, signal });
+
   document.addEventListener('mouseup', (event) => {
     if (!mouseDown) return;
     const dx = Math.abs(event.clientX - mouseDown.x);
@@ -60,6 +90,13 @@
   }, { capture: true, signal });
 
   function pick(down, up, event) {
+    const editableResult = resolveEditableSelection(down, up, event) || freshCachedEditableSelection();
+    if (editableResult && editableResult.text) {
+      console.log(DEBUG_PREFIX, 'detected browser selection', editableResult.metadata && editableResult.metadata.method || 'editable-selection');
+      send(editableResult);
+      return;
+    }
+
     const selectionResult = resolveWindowSelection(down, up);
     let blockedWindowSelection = null;
     if (selectionResult && selectionResult.text) {
@@ -543,6 +580,211 @@
     return overlap * 20 - distance + bandBoost;
   }
 
+
+  function resolveEditableSelection(down, up, event) {
+    const el = findEditableSelectionElement(event, down, up);
+    if (!el) return null;
+    return resolveEditableSelectionFromElement(el);
+  }
+
+  function resolveEditableSelectionFromElement(el) {
+    if (!el) return null;
+
+    if (isTextInputElement(el) || el.tagName === 'TEXTAREA') {
+      return resolveTextControlSelection(el);
+    }
+
+    // contenteditable normally works through window.getSelection().
+    // Keep this as a focused fallback for custom editors that expose a textbox role.
+    if (isContentEditableElement(el)) {
+      const sel = window.getSelection();
+      const text = (sel && !sel.isCollapsed) ? normalizeText(sel.toString()) : '';
+      if (!text) return null;
+      const rect = selectionRectFromWindowSelection(sel) || rectToObj(el.getBoundingClientRect());
+      return {
+        text,
+        fullText: text,
+        source: 'browser',
+        confidence: text.length <= 120 ? 0.93 : 0.86,
+        rect: viewportRectToScreenRect(rect),
+        url: location.href,
+        title: document.title,
+        metadata: {
+          site: location.hostname,
+          method: 'contenteditable-selection',
+          elementTag: String(el.tagName || '').toLowerCase(),
+          role: el.getAttribute('role') || '',
+          editable: true,
+          cjkSafe: containsCjk(text),
+        },
+      };
+    }
+
+    return null;
+  }
+
+  function freshCachedEditableSelection() {
+    if (!lastEditableSelection || !lastEditableSelection.result) return null;
+    if (Date.now() - lastEditableSelection.at > 1200) return null;
+    return lastEditableSelection.result;
+  }
+
+  function resolveTextControlSelection(el) {
+    if (!el || typeof el.selectionStart !== 'number' || typeof el.selectionEnd !== 'number') return null;
+    if (isPasswordLikeInput(el)) return null;
+
+    const start = Math.min(el.selectionStart, el.selectionEnd);
+    const end = Math.max(el.selectionStart, el.selectionEnd);
+    if (end <= start) return null;
+
+    const rawValue = String(el.value || '');
+    const rawText = rawValue.slice(start, end);
+    const text = normalizeText(rawText);
+    if (!text) return null;
+
+    const rect = estimateTextControlSelectionRect(el, start, end) || rectToObj(el.getBoundingClientRect());
+    const tag = String(el.tagName || '').toLowerCase();
+    const type = String(el.getAttribute('type') || '').toLowerCase();
+
+    return {
+      text,
+      fullText: text,
+      source: 'browser',
+      confidence: text.length <= 120 ? 0.96 : 0.9,
+      rect: viewportRectToScreenRect(rect),
+      url: location.href,
+      title: document.title,
+      metadata: {
+        site: location.hostname,
+        method: tag === 'textarea' ? 'editable-textarea-selection' : 'editable-input-selection',
+        elementTag: tag,
+        inputType: type,
+        selectionStart: start,
+        selectionEnd: end,
+        editable: true,
+        cjkSafe: containsCjk(text),
+      },
+    };
+  }
+
+  function findEditableSelectionElement(event, down, up) {
+    const candidates = [
+      getDeepActiveElement(document),
+      asElement(event && event.target),
+      (up && Number.isFinite(up.x) && Number.isFinite(up.y)) ? deepElementFromPoint(up.x, up.y) : null,
+      (down && Number.isFinite(down.x) && Number.isFinite(down.y)) ? deepElementFromPoint(down.x, down.y) : null,
+    ].filter(Boolean);
+
+    for (const node of candidates) {
+      const el = findEditableAncestor(node);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function getDeepActiveElement(root) {
+    let active = root && root.activeElement;
+    for (let i = 0; active && active.shadowRoot && active.shadowRoot.activeElement && i < 6; i++) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active || null;
+  }
+
+  function findEditableAncestor(node) {
+    let el = asElement(node);
+    for (let i = 0; el && i < 8; i++) {
+      if (isTextInputElement(el) || el.tagName === 'TEXTAREA' || isContentEditableElement(el)) return el;
+      if (el.querySelector) {
+        const nested = el.querySelector('input[type="text"], input[type="search"], input:not([type]), textarea, [contenteditable="true"], [role="textbox"]');
+        if (nested && (isTextInputElement(nested) || nested.tagName === 'TEXTAREA' || isContentEditableElement(nested))) return nested;
+      }
+      el = el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+    }
+    return null;
+  }
+
+  function isTextInputElement(el) {
+    if (!el || el.tagName !== 'INPUT') return false;
+    const type = String(el.getAttribute('type') || 'text').toLowerCase();
+    return [
+      'text', 'search', 'url', 'email', 'tel', 'number', 'password'
+    ].includes(type);
+  }
+
+  function isPasswordLikeInput(el) {
+    return el && el.tagName === 'INPUT' && String(el.getAttribute('type') || '').toLowerCase() === 'password';
+  }
+
+  function isContentEditableElement(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    const role = String(el.getAttribute && el.getAttribute('role') || '').toLowerCase();
+    return role === 'textbox' && String(el.getAttribute('contenteditable') || '').toLowerCase() !== 'false';
+  }
+
+  function selectionRectFromWindowSelection(sel) {
+    try {
+      if (!sel || sel.rangeCount <= 0) return null;
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      if (r && r.width > 0 && r.height > 0) return rectToObj(r);
+    } catch (_) {}
+    return null;
+  }
+
+  function estimateTextControlSelectionRect(el, start, end) {
+    const base = safeRect(el);
+    if (!base) return null;
+
+    // For textarea and complex styled inputs, an element-level rect is safer than
+    // an inaccurate tiny rect. It still anchors the toolbar to the search/input box.
+    if (el.tagName === 'TEXTAREA') return rectToObj(base);
+
+    try {
+      const style = getComputedStyle(el);
+      const mirror = document.createElement('div');
+      const before = document.createElement('span');
+      const selected = document.createElement('span');
+
+      const copyProps = [
+        'boxSizing', 'width', 'height', 'fontFamily', 'fontSize', 'fontWeight',
+        'fontStyle', 'letterSpacing', 'textTransform', 'paddingLeft',
+        'paddingRight', 'paddingTop', 'paddingBottom', 'borderLeftWidth',
+        'borderRightWidth', 'borderTopWidth', 'borderBottomWidth'
+      ];
+      mirror.style.cssText = 'position:fixed;left:-100000px;top:0;visibility:hidden;white-space:pre;overflow:hidden;';
+      for (const prop of copyProps) mirror.style[prop] = style[prop];
+      mirror.textContent = '';
+      before.textContent = String(el.value || '').slice(0, start).replace(/ /g, '\u00a0');
+      selected.textContent = String(el.value || '').slice(start, end).replace(/ /g, '\u00a0') || '\u00a0';
+      mirror.appendChild(before);
+      mirror.appendChild(selected);
+      document.body.appendChild(mirror);
+
+      const beforeRect = before.getBoundingClientRect();
+      const selectedRect = selected.getBoundingClientRect();
+      const scrollLeft = Number(el.scrollLeft || 0);
+
+      const x = base.left + (beforeRect.width || 0) - scrollLeft + parseFloat(style.paddingLeft || '0');
+      const y = base.top;
+      const width = Math.max(20, Math.min(base.width, selectedRect.width || 20));
+      const height = base.height;
+
+      mirror.remove();
+
+      if (Number.isFinite(x) && Number.isFinite(width)) {
+        return rectToObj({
+          left: Math.max(base.left, Math.min(x, base.right - 8)),
+          top: y,
+          width: Math.min(width, base.right - Math.max(base.left, x)),
+          height,
+        });
+      }
+    } catch (_) {}
+
+    return rectToObj(base);
+  }
+
+
   function resolveWindowSelection(down, up) {
     const sel = window.getSelection();
     const text = (sel && !sel.isCollapsed) ? normalizeText(sel.toString()) : '';
@@ -712,6 +954,7 @@
   }
 
   function deepElementFromPoint(x, y) {
+    if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return null;
     let el = document.elementFromPoint(x, y);
     for (let i = 0; el && i < 4; i++) {
       if (el.shadowRoot) {
@@ -789,6 +1032,10 @@
     // Pattern order matters: contractions like 's, 'm, 're must match
     // before the [^\s] catch-all, otherwise ' gets split as a lone token.
     return Array.from(normalizeText(text).matchAll(/[A-Za-z0-9]+(?:['\u2019-][A-Za-z0-9]+)*|'[A-Za-z]+|[\u4e00-\u9fff]|[^\s]/g)).map((m) => m[0]);
+  }
+
+  function containsCjk(text) {
+    return /[㐀-鿿豈-﫿]/.test(String(text || ''));
   }
 
   function normalizeText(text) {

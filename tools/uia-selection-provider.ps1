@@ -83,7 +83,7 @@ function Get-ElementText($el) {
   } catch {}
   foreach ($v in $values) {
     $clean = NormalizeText $v
-    if ($clean.Length -gt 0 -and $clean.Length -le 300) { return $clean }
+    if ($clean.Length -gt 0 -and $clean.Length -le 1000) { return $clean }
   }
   return ""
 }
@@ -92,7 +92,7 @@ function IsBadElement($el) {
   if ($null -eq $el) { return $true }
   try {
     $type = $el.Current.ControlType.ProgrammaticName
-    if ($type -match "Button|Menu|ScrollBar|Slider|Edit|ComboBox") { return $true }
+    if ($type -match "Button|Menu|ScrollBar|Slider") { return $true }
   } catch {}
   $name = ""
   try { $name = [string]$el.Current.Name } catch {}
@@ -148,6 +148,43 @@ function SelectByEstimatedWords([string]$fullText, $rectObj, [double]$x1, [doubl
   }
 }
 
+
+function Try-FocusedSelection() {
+  try {
+    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($null -eq $focused) { return $null }
+
+    $pattern = $focused.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    if ($null -eq $pattern) { return $null }
+
+    $ranges = $pattern.GetSelection()
+    if ($null -eq $ranges -or $ranges.Count -lt 1) { return $null }
+
+    $texts = New-Object System.Collections.Generic.List[string]
+    $rects = @()
+    foreach ($range in $ranges) {
+      if ($null -eq $range) { continue }
+      $part = NormalizeText ($range.GetText(1000))
+      if ($part.Length -gt 0) {
+        $texts.Add($part) | Out-Null
+        try { $rects += @($range.GetBoundingRectangles()) } catch {}
+      }
+    }
+
+    $text = NormalizeText ($texts -join " ")
+    if ($text.Length -gt 0 -and $text.Length -le 1000) {
+      return [ordered]@{
+        text = $text
+        fullText = $text
+        rect = RectFromArray $rects
+        confidence = 0.93
+        method = "uia-textpattern-getselection-focused"
+      }
+    }
+  } catch {}
+  return $null
+}
+
 function Try-TextPattern($el, $startPoint, $endPoint) {
   try {
     $pattern = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
@@ -182,12 +219,12 @@ function Try-TextPattern($el, $startPoint, $endPoint) {
       ) | Out-Null
     }
 
-    $text = NormalizeText ($range.GetText(300))
+    $text = NormalizeText ($range.GetText(1000))
     $rect = RectFromArray @($range.GetBoundingRectangles())
-    if ($text.Length -gt 0 -and $text.Length -le 300) {
+    if ($text.Length -gt 0 -and $text.Length -le 1000) {
       return [ordered]@{
         text = $text
-        fullText = NormalizeText ($pattern.DocumentRange.GetText(300))
+        fullText = NormalizeText ($pattern.DocumentRange.GetText(1000))
         rect = $rect
         confidence = 0.88
         method = "uia-textpattern-rangefrompoint"
@@ -225,6 +262,15 @@ $candidates += @(Get-Candidates $midPoint)
 $candidates += @(Get-Candidates $startPoint)
 $candidates += @(Get-Candidates $endPoint)
 $seen = @{}
+
+$focusedSelection = Try-FocusedSelection
+if ($focusedSelection -and $focusedSelection.text) {
+  $focusedSelection["appName"] = $ForegroundProcess
+  $focusedSelection["windowTitle"] = $ForegroundTitle
+  Write-Json $focusedSelection
+  exit 0
+}
+
 
 foreach ($el in $candidates) {
   if ($null -eq $el) { continue }
