@@ -593,6 +593,24 @@ function createMainWindow() {
 }
 
 
+function boostFloatingWindowForFullscreen(win, label = 'floating') {
+  if (!win || win.isDestroyed()) return;
+  try { win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) {}
+  try { win.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {
+    try { win.setAlwaysOnTop(true); } catch (_) {}
+  }
+  try { win.setSkipTaskbar(true); } catch (_) {}
+  try { win.setBackgroundColor('#00000000'); } catch (_) {}
+  // On Windows fullscreen Chrome/video can sit above ordinary always-on-top windows.
+  // Re-applying topmost and moveTop around showInactive() makes the toolbar visible
+  // without focusing away from the fullscreen browser.
+  try { win.moveTop(); } catch (_) {}
+  if (label) {
+    try { console.log('[FloatingTopmost] boost ' + label, win.getBounds()); } catch (_) {}
+  }
+}
+
+
 function setToolbarWindowBounds(bounds, animate = false) {
   if (!toolbarWindow || toolbarWindow.isDestroyed()) return;
   toolbarSuppressMoveSync = true;
@@ -638,11 +656,13 @@ function createToolbarWindow() {
       nodeIntegration: false,
     },
   });
+  boostFloatingWindowForFullscreen(toolbarWindow, 'toolbar:create');
   toolbarWindow.loadURL(routeUrl('toolbar'));
   toolbarWindow.setBackgroundColor('#00000000');
   toolbarWindow.webContents.on('did-finish-load', () => {
     if (toolbarWindow && !toolbarWindow.isDestroyed()) {
       toolbarWindow.setBackgroundColor('#00000000');
+      boostFloatingWindowForFullscreen(toolbarWindow, 'toolbar:ready');
     }
   });
   toolbarWindow._visualHeight = TOOLBAR_VISUAL_HEIGHT;
@@ -673,7 +693,13 @@ function createToolbarMoreWindow() {
       nodeIntegration: false,
     },
   });
+  boostFloatingWindowForFullscreen(toolbarMoreWindow, 'toolbar-more:create');
   toolbarMoreWindow.loadURL(routeUrl('toolbar-more'));
+  toolbarMoreWindow.webContents.on('did-finish-load', () => {
+    if (toolbarMoreWindow && !toolbarMoreWindow.isDestroyed()) {
+      boostFloatingWindowForFullscreen(toolbarMoreWindow, 'toolbar-more:ready');
+    }
+  });
   toolbarMoreWindow.on('closed', () => {
     toolbarMoreWindow = null;
   });
@@ -735,7 +761,13 @@ function createResultWindow() {
       nodeIntegration: false,
     },
   });
+  boostFloatingWindowForFullscreen(resultWindow, 'result:create');
   resultWindow.loadURL(routeUrl('result'));
+  resultWindow.webContents.on('did-finish-load', () => {
+    if (resultWindow && !resultWindow.isDestroyed()) {
+      boostFloatingWindowForFullscreen(resultWindow, 'result:ready');
+    }
+  });
 }
 
 function createTray() {
@@ -1207,7 +1239,9 @@ async function runPronunciationSkill(skill, selectedText) {
 
   placeResultNearSelection();
   resultWindow.webContents.send('result:ready', { ...record, runId: currentRunId });
+  boostFloatingWindowForFullscreen(resultWindow, 'result:before-show');
   resultWindow.showInactive();
+  boostFloatingWindowForFullscreen(resultWindow, 'result:after-show');
   hideToolbarViaCss();
 
   try {
@@ -1633,9 +1667,12 @@ const aid = _perfAttemptId || '';
   destroyToolbarMoreWindow('new-toolbar-show');
   toolbarHideGeneration += 1;
   toolbarWindow.setIgnoreMouseEvents(false);
+  boostFloatingWindowForFullscreen(toolbarWindow, 'toolbar:before-show');
   if (PERF_LOGGING) console.log('[PERF]', JSON.stringify({ event: 'toolbar_show_inactive', durationMs: Date.now() - _tbStart, textLen: text.length, attemptId: aid }));
   console.log('[Toolbar] before showInactive', JSON.stringify({ textLen: text.length, source: picked.source }));
   toolbarWindow.showInactive();
+  boostFloatingWindowForFullscreen(toolbarWindow, 'toolbar:after-show');
+  setTimeout(() => boostFloatingWindowForFullscreen(toolbarWindow, 'toolbar:after-show-delay'), 80);
   console.log('toolbar show for selection', {
     textLength: String(picked.text || '').length,
     bounds: toolbarWindow.getBounds(),
@@ -1881,9 +1918,12 @@ async function showToolbarMore() {
   toolbarMorePointerInside = false;
   placeToolbarMoreNearToolbar();
   toolbarMoreWindow.setIgnoreMouseEvents(false);
+  boostFloatingWindowForFullscreen(toolbarMoreWindow, 'toolbar-more:before-show');
   toolbarMoreWindow.webContents.send('toolbar-more:state', { open: true });
   toolbarWindow.webContents.send('toolbar-more:state', { open: true });
   toolbarMoreWindow.showInactive();
+  boostFloatingWindowForFullscreen(toolbarMoreWindow, 'toolbar-more:after-show');
+  setTimeout(() => boostFloatingWindowForFullscreen(toolbarMoreWindow, 'toolbar-more:after-show-delay'), 80);
   scheduleToolbarHide();
   return { ok: true, open: true };
 }
@@ -2676,7 +2716,9 @@ ipcMain.handle('skill:run', async (_event, { skillId, selection }) => {
     resultFloatingSide = null;
     placeResultNearSelection();
     resultWindow.webContents.send('result:confirm-selection', { record, skillId: skill.id });
-    resultWindow.showInactive();
+    boostFloatingWindowForFullscreen(resultWindow, 'result:before-show');
+  resultWindow.showInactive();
+  boostFloatingWindowForFullscreen(resultWindow, 'result:after-show');
     hideToolbarViaCss();
     return record;
   }
@@ -2746,7 +2788,9 @@ async function runSkillInternal(skill, selectedText, store) {
   placeResultNearSelection();
   resultWindow.webContents.send('result:ready', { ...record, runId: currentRunId });
   console.log('[Result] show loading runId=' + currentRunId);
+  boostFloatingWindowForFullscreen(resultWindow, 'result:before-show');
   resultWindow.showInactive();
+  boostFloatingWindowForFullscreen(resultWindow, 'result:after-show');
 
   try {
     const result = await callModelStreaming(skill, selectedText, (_delta, fullText, callbackRunId) => {
