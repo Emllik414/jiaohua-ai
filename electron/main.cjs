@@ -1121,39 +1121,48 @@ function placeToolbarMoreNearToolbar() {
   const toolbarBounds = toolbarWindow.getBounds();
   const width = TOOLBAR_MORE_FIXED_WIDTH;
   const height = TOOLBAR_MORE_FIXED_HEIGHT;
+  // toolbarWindow contains a transparent tooltip strip above the visible capsule.
+  // Attach the menu to the visible capsule, otherwise an above placement leaves
+  // TOOLBAR_TOOLTIP_TOP_SPACE pixels of apparent empty distance.
+  const visibleToolbarBounds = {
+    x: toolbarBounds.x,
+    y: toolbarBounds.y + TOOLBAR_TOOLTIP_TOP_SPACE,
+    width: toolbarBounds.width,
+    height: TOOLBAR_VISUAL_HEIGHT,
+  };
   const display = screen.getDisplayNearestPoint({
-    x: toolbarBounds.x + toolbarBounds.width / 2,
-    y: toolbarBounds.y + toolbarBounds.height / 2,
+    x: visibleToolbarBounds.x + visibleToolbarBounds.width / 2,
+    y: visibleToolbarBounds.y + visibleToolbarBounds.height / 2,
   });
   const wa = display.workArea;
   const gap = 2;
-  const spaceBelow = (wa.y + wa.height) - (toolbarBounds.y + toolbarBounds.height);
-  const spaceAbove = toolbarBounds.y - wa.y;
+  const spaceBelow = (wa.y + wa.height) - (visibleToolbarBounds.y + visibleToolbarBounds.height);
+  const spaceAbove = visibleToolbarBounds.y - wa.y;
   let placement = 'below';
   let x, y;
 
   if (toolbarMoreAnchor) {
-    const btnScreenX = toolbarBounds.x + toolbarMoreAnchor.x;
+    const btnScreenX = visibleToolbarBounds.x + toolbarMoreAnchor.x;
     x = btnScreenX + toolbarMoreAnchor.width - width;
     toolbarMoreAnchor = null;
   } else {
-    x = toolbarBounds.x + toolbarBounds.width - width;
+    x = visibleToolbarBounds.x + visibleToolbarBounds.width - width;
   }
   x = Math.max(wa.x + gap, Math.min(x, wa.x + wa.width - width - gap));
 
   if (spaceBelow >= height + gap) {
-    y = toolbarBounds.y + toolbarBounds.height + gap;
+    y = visibleToolbarBounds.y + visibleToolbarBounds.height + gap;
     placement = 'below';
   } else if (spaceAbove >= height + gap) {
-    y = toolbarBounds.y - height - gap;
+    y = visibleToolbarBounds.y - height - gap;
     placement = 'above';
   } else {
-    y = toolbarBounds.y + toolbarBounds.height + gap;
+    y = visibleToolbarBounds.y + visibleToolbarBounds.height + gap;
     placement = 'fallback';
   }
   y = Math.max(wa.y + gap, Math.min(y, wa.y + wa.height - height - gap));
 
-  console.log('[MoreMenu position]', JSON.stringify({ toolbarBounds, width, height, gap, spaceAbove, spaceBelow, placement, finalX: x, finalY: y }));
+  console.log('[MoreMenu position]', JSON.stringify({ toolbarBounds, visibleToolbarBounds, width, height, gap, spaceAbove, spaceBelow, placement, finalX: x, finalY: y }));
   console.log('[MoreMenu size check]', JSON.stringify({ windowBoundsBefore: {}, menuWidth: width, menuHeight: height, placement, finalX: x, finalY: y, windowBoundsAfter: {} }));
   toolbarMoreWindow.setBounds({ x, y, width, height }, false);
 }
@@ -3181,4 +3190,3 @@ app.on('before-quit', () => {
   stopSelectionHelper();
   stopSpeak();
 });
-
