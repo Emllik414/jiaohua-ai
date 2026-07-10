@@ -223,7 +223,8 @@ const TOOLBAR_VISUAL_HEIGHT = 52;
 const TOOLBAR_TOOLTIP_TOP_SPACE = 26;
 const TOOLBAR_FIXED_HEIGHT = TOOLBAR_VISUAL_HEIGHT + TOOLBAR_TOOLTIP_TOP_SPACE;
 const TOOLBAR_MORE_FIXED_WIDTH = 190;
-const TOOLBAR_MORE_FIXED_HEIGHT = 180;
+// Show the full command list instead of forcing a scrollable menu.
+const TOOLBAR_MORE_FIXED_HEIGHT = 150;
 let toolbarFixedWidth = TOOLBAR_DEFAULT_WIDTH;
 let currentResultHeight = RESULT_DEFAULT_HEIGHT;
 
@@ -676,7 +677,7 @@ function createToolbarWindow() {
 function createToolbarMoreWindow() {
   toolbarMoreWindow = new BrowserWindow({
     width: TOOLBAR_MORE_FIXED_WIDTH,
-    height: TOOLBAR_MORE_FIXED_HEIGHT,
+    height: 56,
     icon: path.join(__dirname, '..', 'src', 'assets', 'icon.ico'),
     frame: false,
     transparent: true,
@@ -1120,7 +1121,7 @@ function placeToolbarMoreNearToolbar() {
   if (!toolbarWindow || !toolbarMoreWindow || toolbarWindow.isDestroyed() || toolbarMoreWindow.isDestroyed()) return;
   const toolbarBounds = toolbarWindow.getBounds();
   const width = TOOLBAR_MORE_FIXED_WIDTH;
-  const height = TOOLBAR_MORE_FIXED_HEIGHT;
+  const height = toolbarMoreWindow.getBounds().height;
   // toolbarWindow contains a transparent tooltip strip above the visible capsule.
   // Attach the menu to the visible capsule, otherwise an above placement leaves
   // TOOLBAR_TOOLTIP_TOP_SPACE pixels of apparent empty distance.
@@ -1923,6 +1924,9 @@ async function showToolbarMore() {
   if (!toolbarWindow || toolbarWindow.isDestroyed()) return { ok: false, open: false };
   await ensureToolbarMoreWindowReady();
   if (!toolbarMoreWindow || toolbarMoreWindow.isDestroyed()) return { ok: false, open: false };
+  // A stable menu size avoids visual jumping as skills are added. The list
+  // itself scrolls, with its scrollbar intentionally hidden in the renderer.
+  toolbarMoreWindow.setSize(TOOLBAR_MORE_FIXED_WIDTH, TOOLBAR_MORE_FIXED_HEIGHT, false);
   toolbarExpanded = true;
   toolbarMorePointerInside = false;
   placeToolbarMoreNearToolbar();
@@ -2528,7 +2532,10 @@ ipcMain.handle('conversations:delete', (_event, { id, deleteRecords }) => {
 });
 ipcMain.handle('conversations:pin', (_event, id) => {
   return updateStore((store) => {
-    store.conversations = (store.conversations || []).map((c) => c.id === id ? { ...c, pinned: !c.pinned, updatedAt: new Date().toISOString() } : c);
+    const now = new Date().toISOString();
+    store.conversations = (store.conversations || []).map((c) => c.id === id
+      ? { ...c, pinned: !c.pinned, pinnedAt: !c.pinned ? now : null, updatedAt: now }
+      : c);
     return store;
   });
 });

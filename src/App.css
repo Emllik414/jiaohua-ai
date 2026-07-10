@@ -866,10 +866,10 @@ button:disabled { cursor: default; }
 }
 .result-card {
   width: 100vw; height: 100vh; margin: 0; position: relative;
-  display: flex; flex-direction: column; overflow: hidden; border-radius: 26px;
+  display: flex; flex-direction: column; overflow: visible; border-radius: 26px;
   border: 1px solid rgba(15, 23, 42, 0.1); background: #fff;
   backdrop-filter: none; box-shadow: none;
-  clip-path: inset(0 round 26px); isolation: isolate; transform: translateZ(0);
+  isolation: isolate; transform: translateZ(0);
 }
 .result-card::before, .result-card::after { display: none !important; content: none !important; }
 .result-resize-handle {
@@ -916,14 +916,6 @@ button:disabled { cursor: default; }
 .selected-box p { margin: 0; font-size: 13px; }
 .answer-box { min-height: 60px; }
 .answer-box.failed { color: #c03744; }
-.result-card footer {
-  display: flex; gap: 6px; padding: 8px 12px;
-  border-top: 1px solid rgba(15, 23, 42, 0.06); flex-wrap: wrap;
-}
-.result-card footer button {
-  height: 30px; padding: 0 10px; font-size: 12px;
-}
-.result-card footer .save-obsidian { font-size: 12px; }
 .result-status {
   padding: 8px 12px; color: #475569; font-size: 12px;
   border-top: 1px solid rgba(15, 23, 42, 0.06);
@@ -1262,7 +1254,6 @@ input, textarea, select {
 }
 
 .soft-sidebar nav button,
-.result-card footer button,
 .conv-header-actions button,
 .pill-btn,
 .obsidian-tpl-item,
@@ -1638,7 +1629,7 @@ textarea.template-textarea,
 
 /* Context menu */
 .skill-menu {
-  position: fixed; z-index: 1000; min-width: 180px;
+  position: absolute; right: 10px; z-index: 1000; min-width: 180px;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 18px;
@@ -1646,6 +1637,8 @@ textarea.template-textarea,
   padding: 8px;
   backdrop-filter: blur(18px);
 }
+.skill-menu.below { top: calc(100% + 6px); }
+.skill-menu.above { bottom: calc(100% + 6px); }
 .skill-menu-item {
   height: 38px; border-radius: 12px; padding: 0 12px;
   display: flex; align-items: center; font-weight: 760;
@@ -2048,7 +2041,7 @@ textarea.template-textarea,
   user-select: none;
   -webkit-user-select: none;
   will-change: transform;
-  contain: layout paint;
+  contain: layout;
 }
 
 .skill-row.dragging {
@@ -2090,6 +2083,7 @@ textarea.template-textarea,
 .skill-row {
   position: relative;
 }
+.skill-row.menu-open { z-index: 200; }
 
 .skill-row.dragging {
   opacity: 0.52 !important;
@@ -2290,7 +2284,14 @@ html, body, #root, .main-window-wrap, .main-glass-window { overflow: hidden !imp
 .main-glass-window, .main-panel, .history-layout, .api-layout, .obsidian-layout,
 .records-pane, .api-config-card, .template-editor-card, .skill-modal,
 .skill-modal-body, .skill-modal-grid, .skill-modal-field { min-width: 0; }
-.main-panel { overscroll-behavior: contain; scrollbar-width: thin; }
+.main-panel { overscroll-behavior: contain; scrollbar-width: none; }
+.main-panel::-webkit-scrollbar,
+.conversation-list::-webkit-scrollbar,
+.template-list::-webkit-scrollbar,
+.api-panel::-webkit-scrollbar,
+.vault-note-list::-webkit-scrollbar,
+.preview-content::-webkit-scrollbar,
+.template-preview::-webkit-scrollbar { width: 0; height: 0; }
 .skill-modal-body { overflow-x: hidden; }
 .skill-icon-popover { max-width: min(326px, calc(100vw - 48px)); }
 .skill-icon-grid { grid-template-columns: repeat(auto-fit, minmax(38px, 1fr)); }
@@ -2360,6 +2361,35 @@ html, body, #root, .main-window-wrap, .main-glass-window { overflow: hidden !imp
 :root[data-appearance='dark'] .skill-modal-footer .primary { color: #fff; background: #6757e8; }
 :root[data-appearance='dark'] input::placeholder,
 :root[data-appearance='dark'] textarea::placeholder { color: #858693; }
+
+/* Native-looking white controls were bypassing the generic dark form rules. */
+:root[data-appearance='dark'] .input-wrap,
+:root[data-appearance='dark'] .input-wrap button,
+:root[data-appearance='dark'] .api-key-eye,
+:root[data-appearance='dark'] .api-model-btn,
+:root[data-appearance='dark'] .model-add-row button,
+:root[data-appearance='dark'] .hotkey-change-btn,
+:root[data-appearance='dark'] .hotkey-reset-btn,
+:root[data-appearance='dark'] .vault-row .browse-btn,
+:root[data-appearance='dark'] .obsidian-actions .btn {
+  color: var(--ui-text);
+  border-color: var(--ui-border);
+  background: #292a34;
+}
+
+:root[data-appearance='dark'] .template-form .form-row input,
+:root[data-appearance='dark'] .path-input-wrap input {
+  color: var(--ui-text) !important;
+  border-color: var(--ui-border) !important;
+  background: #292a34 !important;
+}
+:root[data-appearance='dark'] .template-form .form-row input::placeholder,
+:root[data-appearance='dark'] .path-input-wrap input::placeholder { color: #9495a5 !important; }
+:root[data-appearance='dark'] .obsidian-actions .btn.primary {
+  color: #fff !important;
+  border-color: #6757e8 !important;
+  background: #6757e8 !important;
+}
 
 @media (max-width: 960px) {
   .main-window-wrap { padding: 8px; }

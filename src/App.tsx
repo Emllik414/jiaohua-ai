@@ -7,8 +7,7 @@ import { Toolbar } from './toolbar/Toolbar'
 import { MoreMenu } from './toolbar/MoreMenu'
 import { ResultCardChrome } from './toolbar/ResultCardChrome'
 import { buildMoreMenuSkills, buildToolbarActions } from './toolbar/actionRegistry'
-import brandImg from './assets/icon.png'
-import { SkillIcon, SKILL_ICON_KEYS, getDefaultSkillIconKey } from './components/SkillIcon'
+import { SkillIcon, SKILL_ICON_KEYS } from './components/SkillIcon'
 import './App.css'
 
 // ─── types ───
@@ -74,6 +73,7 @@ type Conversation = {
   id: string
   title: string
   pinned: boolean
+  pinnedAt?: string | null
   createdAt: string
   updatedAt: string
   lastActivityAt: string
@@ -558,7 +558,7 @@ function tabSubtitle(tab: string) {
   }, [conversations, convSearch])
 
   const sortedConvs = useMemo(() => {
-    const pinned = filteredConvs.filter((c) => c.pinned).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
+    const pinned = filteredConvs.filter((c) => c.pinned).sort((a, b) => (b.pinnedAt || b.updatedAt || b.lastActivityAt).localeCompare(a.pinnedAt || a.updatedAt || a.lastActivityAt))
     const unpinned = filteredConvs.filter((c) => !c.pinned).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
     return [...pinned, ...unpinned]
   }, [filteredConvs])
@@ -612,7 +612,6 @@ function tabSubtitle(tab: string) {
     setMessage(`已导入 ${ok} 条${fail > 0 ? `，${fail} 条失败` : ''}`)
   }
 
-  const importAllToObsidian = () => importToObsidian(convRecords)
   const importSelectedToObsidian = () => importToObsidian(selectedRecords)
   const deleteSingle = async (id: string) => { await window.desktopApi.deleteHistory([id]); onRefresh() }
   const deleteSelected = async () => { if (selectedIds.size) { await window.desktopApi.deleteHistory([...selectedIds]); onRefresh() } }
@@ -1092,7 +1091,6 @@ function isCustomSkill(skill: Skill) {
   return skill.id.startsWith('custom_') || skill.id === 'custom_skill'
 }
 
-const toolbarSkillLimit = 5
 
 function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[]; onSave: (skill: Skill) => void; onDelete: (skillId: string) => void; onReorder: (skillIds: string[]) => void }) {
   const sortedSkills = useMemo(() => [...skills].sort((a, b) => a.sortOrder - b.sortOrder), [skills])
@@ -1101,7 +1099,7 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
   const skillById = useMemo(() => new Map(sortedSkills.map((skill) => [skill.id, skill])), [sortedSkills])
 
   const [menuSkill, setMenuSkill] = useState<Skill | null>(null)
-  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const [menuSide, setMenuSide] = useState<'above' | 'below'>('below')
   const [editing, setEditing] = useState<Skill | null>(null)
   const [draggingId, setDraggingId] = useState('')
   const [dragOverId, setDragOverId] = useState('')
@@ -1143,7 +1141,6 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuSkill(null)
-        setMenuPos(null)
       }
     }
     if (menuSkill) {
@@ -1154,7 +1151,7 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
 
   const openMenu = (e: React.MouseEvent, skill: Skill) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    setMenuPos({ x: Math.min(rect.right - 180, window.innerWidth - 200), y: rect.bottom + 4 })
+    setMenuSide(rect.bottom + 230 > window.innerHeight ? 'above' : 'below')
     setMenuSkill(skill)
   }
 
@@ -1184,7 +1181,6 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
     setDragOverId('')
     setDragOverPosition('before')
     setMenuSkill(null)
-    setMenuPos(null)
 
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', skillId)
@@ -1263,7 +1259,7 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
     return (
       <div
         key={skill.id}
-        className={'skill-row' + (draggingId === skill.id ? ' dragging' : '') + dragClass}
+        className={'skill-row' + (draggingId === skill.id ? ' dragging' : '') + (menuSkill?.id === skill.id ? ' menu-open' : '') + dragClass}
         draggable
         onDragStart={(event) => handleDragStart(event, skill.id)}
         onDragOver={(event) => handleDragOver(event, skill.id)}
@@ -1279,6 +1275,40 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
         </div>
         <span className={'pill ' + (isAI ? 'purple' : 'system')}>{isAI ? 'AI 技能' : '系统技能'}</span>
         <button className="skill-row-more" onClick={(e) => openMenu(e, skill)}>⋯</button>
+        {menuSkill?.id === skill.id ? (
+          <div className={'skill-menu ' + menuSide} ref={menuRef} draggable={false} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="skill-menu-item" onClick={() => { setEditing({ ...skill }); setMenuSkill(null) }}>编辑技能</div>
+            {isCustomSkill(skill) ? (
+              <>
+                <div className="skill-menu-item" onClick={() => {
+                  const clone: Skill = { ...skill, id: 'custom_' + Date.now(), name: skill.name + ' (副本)', sortOrder: 1000 + skills.length }
+                  onSave(clone)
+                  setMenuSkill(null)
+                }}>复制为新技能</div>
+                <div className="skill-menu-sep" />
+                <div className="skill-menu-item danger" onClick={() => {
+                  onDelete(skill.id)
+                  setMenuSkill(null)
+                }}>删除技能</div>
+              </>
+            ) : null}
+            <div className="skill-menu-sep" />
+            <div className="skill-menu-item" onClick={() => {
+              const ids = displaySkills.map((s) => s.id)
+              const fromIdx = ids.indexOf(skill.id)
+              if (fromIdx > 0) { ids.splice(fromIdx, 1); ids.unshift(skill.id) }
+              onReorder(ids)
+              setMenuSkill(null)
+            }}>移到最前</div>
+            <div className="skill-menu-item" onClick={() => {
+              const ids = displaySkills.map((s) => s.id)
+              const fromIdx = ids.indexOf(skill.id)
+              if (fromIdx >= 0 && fromIdx < 5) { ids.splice(fromIdx, 1); ids.splice(5, 0, skill.id) }
+              onReorder(ids)
+              setMenuSkill(null)
+            }}>移到更多菜单</div>
+          </div>
+        ) : null}
       </div>
     )
   }
@@ -1312,41 +1342,6 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
             <div className="section-card-desc">在 "..." 中显示的技能</div>
           </div>
           <div className="skill-rows">{moreSkills.map(renderSkillRow)}</div>
-        </div>
-      ) : null}
-
-      {menuSkill && menuPos ? (
-        <div className="skill-menu" ref={menuRef} style={{ left: menuPos.x + 'px', top: menuPos.y + 'px' }}>
-          <div className="skill-menu-item" onClick={() => { setEditing({ ...menuSkill }); setMenuSkill(null) }}>编辑技能</div>
-          {isCustomSkill(menuSkill) ? (
-            <>
-              <div className="skill-menu-item" onClick={() => {
-                const clone: Skill = { ...menuSkill, id: 'custom_' + Date.now(), name: menuSkill.name + ' (副本)', sortOrder: 1000 + skills.length }
-                onSave(clone)
-                setMenuSkill(null)
-              }}>复制为新技能</div>
-              <div className="skill-menu-sep" />
-              <div className="skill-menu-item danger" onClick={() => {
-                if (window.confirm('确定删除技能「' + menuSkill.name + '」吗？')) onDelete(menuSkill.id)
-                setMenuSkill(null)
-              }}>删除技能</div>
-            </>
-          ) : null}
-          <div className="skill-menu-sep" />
-          <div className="skill-menu-item" onClick={() => {
-            const ids = displaySkills.map((s) => s.id)
-            const fromIdx = ids.indexOf(menuSkill!.id)
-            if (fromIdx > 0) { ids.splice(fromIdx, 1); ids.unshift(menuSkill!.id) }
-            onReorder(ids)
-            setMenuSkill(null)
-          }}>移到最前</div>
-          <div className="skill-menu-item" onClick={() => {
-            const ids = displaySkills.map((s) => s.id)
-            const fromIdx = ids.indexOf(menuSkill!.id)
-            if (fromIdx >= 0 && fromIdx < 5) { ids.splice(fromIdx, 1); ids.splice(5, 0, menuSkill!.id) }
-            onReorder(ids)
-            setMenuSkill(null)
-          }}>移到更多菜单</div>
         </div>
       ) : null}
 
@@ -2106,6 +2101,21 @@ function ResultView() {
       setStatus(error instanceof Error ? error.message : String(error))
     }
   }
+  const toggleTemplateMenu = async () => {
+    if (footerMoreOpen) {
+      setFooterMoreOpen(false)
+      return
+    }
+    const data = await window.desktopApi.getInitialData()
+    const templates = data.obsidianTemplates || []
+    setResultTemplates(templates)
+    setResultTemplateId((current) => {
+      if (templates.some((item) => item.id === current)) return current
+      const preferred = data.settings.obsidian.activeTemplateId
+      return templates.some((item) => item.id === preferred) ? (preferred || '') : (templates[0]?.id || '')
+    })
+    setFooterMoreOpen(true)
+  }
   const startResultDrag = async (event: ReactMouseEvent) => {
     const target = event.target as HTMLElement
     if (target.closest('button')) return
@@ -2177,15 +2187,12 @@ function ResultView() {
         onPointerDown={() => window.desktopApi.lockResultInteraction(900)}
         footer={(
           <>
-            <div className="result-obsidian-row">
-              <button onClick={exportObsidian}><span>◇</span>保存到 Obsidian</button>
-            </div>
-            <button onClick={copy}><span>⧉</span>复制</button>
-            <button onClick={() => void toggleDesktopSpeak(record.answerMarkdown, resultTtsKey)}><span>◖</span>{resultSpeaking ? '停止' : '朗读'}</button>
-            <button onClick={() => window.desktopApi.runSkill(record.skillId, record.selectedText)}><span>↻</span>重新生成</button>
-            <div className="result-footer-spacer" />
+            <button className="result-footer-action action-copy" aria-label="复制" onClick={copy}><SkillIcon iconKey="copy" /><span className="result-action-tooltip" role="tooltip">复制</span></button>
+            <button className="result-footer-action action-speak" aria-label={resultSpeaking ? '停止' : '朗读'} onClick={() => void toggleDesktopSpeak(record.answerMarkdown, resultTtsKey)}><SkillIcon iconKey="speaker" /><span className="result-action-tooltip" role="tooltip">{resultSpeaking ? '停止' : '朗读'}</span></button>
+            <button className="result-footer-action action-regenerate" aria-label="重新生成" onClick={() => window.desktopApi.runSkill(record.skillId, record.selectedText)}><SkillIcon iconKey="refresh" /><span className="result-action-tooltip" role="tooltip">重新生成</span></button>
+            <button className="result-footer-action result-obsidian-button action-obsidian" aria-label="Obsidian 导入" onClick={() => void exportObsidian()}><SkillIcon iconKey="obsidian" /><span className="result-action-tooltip" role="tooltip">Obsidian 导入</span></button>
             <div className="result-footer-more">
-              <button className="result-footer-more-button" onClick={() => setFooterMoreOpen((value) => !value)} aria-label="更多操作">•••</button>
+              <button className="result-footer-more-button" onClick={() => void toggleTemplateMenu()} aria-label="更多操作"><SkillIcon iconKey="more" /></button>
               {footerMoreOpen ? (
                 <div className="result-footer-menu">
                   <div className="result-footer-menu-label">选择 Obsidian 模板</div>

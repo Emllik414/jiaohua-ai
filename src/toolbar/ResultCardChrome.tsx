@@ -90,9 +90,9 @@ export function ResultCardChrome({
    if (!el) return;
    const check = () => {
       const d = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShowScrollDown(d > 18);
-      if (d > 80) autoFollowRef.current = false;
-      if (d < 48) autoFollowRef.current = true;
+      if (d <= 48) autoFollowRef.current = true;
+      else if (d > 80) autoFollowRef.current = false;
+      setShowScrollDown(!autoFollowRef.current && d > 48);
    };
    check();
    el.addEventListener('scroll', check);
@@ -137,24 +137,24 @@ export function ResultCardChrome({
         </button>
       </header>
 
-      <div className='result-card-scroll' ref={scrollRef}>
-        <section ref={sourceRef} className='source-quote'>
-          <div className='source-head'>
-            <span>原文</span>
-            <button className='copy-inline' onClick={() => { try { (window.desktopApi as any).copyText?.(selectedText, {silent: true}); } catch(_) {} }}>复制原文</button>
-          </div>
-          <p className='source-text'>{selectedText}</p>
-        </section>
-        <section ref={answerRef} className='answer'>{children}</section>
-      </div>
+      <div className='result-card-scroll-shell'>
+        <div className='result-card-scroll' ref={scrollRef}>
+          <section ref={sourceRef} className='source-quote'>
+            <div className='source-head'>
+              <span>原文</span>
+              <button className='copy-inline' aria-label='复制原文' title='复制原文' onClick={() => { try { (window.desktopApi as any).copyText?.(selectedText, {silent: true}); } catch(_) {} }}><SkillIcon iconKey='copy' /></button>
+            </div>
+            <p className='source-text'>{selectedText}</p>
+          </section>
+          <section ref={answerRef} className='answer'>{children}</section>
+        </div>
 
-      {showScrollDown && (
-        <button className='scroll-down-hint show' onClick={scrollToBottom} title='滚动到底部'>
-          <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round'>
-            <path d='M12 5v14' /><path d='m19 12-7 7-7-7' />
-          </svg>
+        <button className={'scroll-down-hint' + (showScrollDown ? ' show' : '')} onClick={scrollToBottom} title='滚动到底部' aria-hidden={!showScrollDown} tabIndex={showScrollDown ? 0 : -1}>
+            <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round'>
+              <path d='M12 5v14' /><path d='m19 12-7 7-7-7' />
+            </svg>
         </button>
-      )}
+      </div>
 
       <footer ref={footerRef} className='result-card-footer'>{footer}</footer>
       {statusLine ? <div className='status-line'>{statusLine}</div> : null}
