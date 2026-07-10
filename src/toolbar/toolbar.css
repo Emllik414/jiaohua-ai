@@ -21,7 +21,9 @@
   flex: 0 0 auto;
   padding-top: 26px; /* just enough room for the hover bubble */
   box-sizing: border-box;
-  background: transparent;
+  background: transparent !important;
+  box-shadow: none !important;
+  filter: none !important;
   opacity: 1;
   pointer-events: auto;
   transition: opacity 80ms ease, transform 100ms ease;
@@ -41,14 +43,12 @@
   padding: 6px;
   height: 50px;
   border-radius: 21px;
-  border: 1px solid rgba(226, 232, 240, .72);
-  background: rgba(255, 255, 255, .90);
+  border: 1px solid rgba(226, 232, 240, .82);
+  background: rgba(255, 255, 255, .98);
   box-shadow:
-    0 10px 28px rgba(15, 23, 42, .085),
-    0 2px 8px rgba(15, 23, 42, .045),
-    inset 0 1px 0 rgba(255, 255, 255, .78);
-  backdrop-filter: blur(18px) saturate(1.12);
-  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+    inset 0 1px 0 rgba(255, 255, 255, .86);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   white-space: nowrap;
   box-sizing: border-box;
   overflow: visible;
@@ -68,7 +68,7 @@
 .toolbar-layer.dragging .toolbar-shell {
   cursor: grabbing;
   transform: scale(1.02);
-  box-shadow: 0 12px 30px rgba(15, 23, 42, .11);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .86);
 }
 
 .drag-handle {
@@ -88,7 +88,7 @@
 }
 
 .drag-handle:hover {
-  background: rgba(241, 245, 249, .82);
+  background: rgba(241, 245, 249, .72);
   color: #64748b;
 }
 
@@ -129,7 +129,7 @@
 
 .tool-btn:hover,
 .tool-btn.active {
-  background: rgba(238, 245, 255, .86);
+  background: rgba(238, 245, 255, .76);
   color: var(--ui-accent, #2563eb);
   transform: translateY(-1px);
 }

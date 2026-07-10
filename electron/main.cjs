@@ -564,6 +564,12 @@ function createToolbarWindow() {
     },
   });
   toolbarWindow.loadURL(routeUrl('toolbar'));
+  toolbarWindow.setBackgroundColor('#00000000');
+  toolbarWindow.webContents.on('did-finish-load', () => {
+    if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+      toolbarWindow.setBackgroundColor('#00000000');
+    }
+  });
   toolbarWindow._visualHeight = TOOLBAR_VISUAL_HEIGHT;
 }
 

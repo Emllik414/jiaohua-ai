@@ -1561,12 +1561,31 @@ function ToolbarView() {
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
-    document.body.style.background = 'transparent'
-    document.documentElement.style.background = 'transparent'
-    document.body.style.width = 'max-content'
+    // Keep the floating toolbar BrowserWindow visually transparent.
+    // This prevents the enlarged tooltip area from showing a gray rectangular backing.
+    document.documentElement.style.background = 'rgba(0,0,0,0)'
+    document.documentElement.style.backgroundColor = 'rgba(0,0,0,0)'
+    document.documentElement.style.margin = '0'
+    document.documentElement.style.padding = '0'
+    document.documentElement.style.overflow = 'visible'
     document.documentElement.style.width = 'max-content'
+
+    document.body.style.background = 'rgba(0,0,0,0)'
+    document.body.style.backgroundColor = 'rgba(0,0,0,0)'
+    document.body.style.margin = '0'
+    document.body.style.padding = '0'
+    document.body.style.overflow = 'visible'
+    document.body.style.width = 'max-content'
+
     const root = document.getElementById('root')
-    if (root) root.style.width = 'max-content'
+    if (root) {
+      root.style.background = 'rgba(0,0,0,0)'
+      root.style.backgroundColor = 'rgba(0,0,0,0)'
+      root.style.margin = '0'
+      root.style.padding = '0'
+      root.style.overflow = 'visible'
+      root.style.width = 'max-content'
+    }
     window.desktopApi.getInitialData().then((data) => setSkills(data.toolbarSkills))
 
     // Visibility toggle — near-instant CSS transition
