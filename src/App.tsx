@@ -262,11 +262,26 @@ function useDesktopTts() {
 }
 
 export default function App() {
+  useAppearanceBootstrap()
   const route = routeName()
   if (route === 'toolbar') return <ToolbarView />
   if (route === 'toolbar-more') return <ToolbarMoreView />
   if (route === 'result') return <ResultView />
   return <MainView />
+}
+
+function useAppearanceBootstrap() {
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const sync = () => applyAppearance(getStoredAppearance(), media.matches)
+    sync()
+    media.addEventListener('change', sync)
+    window.addEventListener('storage', sync)
+    return () => {
+      media.removeEventListener('change', sync)
+      window.removeEventListener('storage', sync)
+    }
+  }, [])
 }
 
 function MainView() {
@@ -1986,6 +2001,8 @@ function ResultView() {
   const [record, setRecord] = useState<HistoryRecord | null>(null)
   const [sourceExpanded, setSourceExpanded] = useState(false)
   const [footerMoreOpen, setFooterMoreOpen] = useState(false)
+  const [resultTemplates, setResultTemplates] = useState<ObsidianTemplate[]>([])
+  const [resultTemplateId, setResultTemplateId] = useState('')
   const [status, setStatus] = useState('')
   const [confirmText, setConfirmText] = useState('')
   const [confirmSkillId, setConfirmSkillId] = useState('')
@@ -1994,6 +2011,15 @@ function ResultView() {
   const resultCardRef = useRef<HTMLDivElement>(null)
   const resultDragRef = useRef({ active: false, startX: 0, startY: 0, winX: 0, winY: 0 })
   const { activeTtsKey, toggleDesktopSpeak } = useDesktopTts()
+
+  useEffect(() => {
+    window.desktopApi.getInitialData().then((data) => {
+      const templates = data.obsidianTemplates || []
+      setResultTemplates(templates)
+      const preferred = data.settings.obsidian.activeTemplateId
+      setResultTemplateId(templates.some((item) => item.id === preferred) ? (preferred || '') : (templates[0]?.id || ''))
+    })
+  }, [])
 
   useEffect(() => {
     const offReady = window.desktopApi.onResultReady((next) => {
@@ -2072,7 +2098,9 @@ function ResultView() {
   }
   const exportObsidian = async () => {
     try {
-      const result = await saveRecordToActiveObsidian(record)
+      const templateId = resultTemplateId || resultTemplates[0]?.id
+      if (!templateId) throw new Error('没有可用的 Obsidian 模板')
+      const result = await window.desktopApi.saveToObsidianNote(templateId, record.id, record)
       setStatus(`已保存：${result.path}`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
@@ -2149,6 +2177,9 @@ function ResultView() {
         onPointerDown={() => window.desktopApi.lockResultInteraction(900)}
         footer={(
           <>
+            <div className="result-obsidian-row">
+              <button onClick={exportObsidian}><span>◇</span>保存到 Obsidian</button>
+            </div>
             <button onClick={copy}><span>⧉</span>复制</button>
             <button onClick={() => void toggleDesktopSpeak(record.answerMarkdown, resultTtsKey)}><span>◖</span>{resultSpeaking ? '停止' : '朗读'}</button>
             <button onClick={() => window.desktopApi.runSkill(record.skillId, record.selectedText)}><span>↻</span>重新生成</button>
@@ -2157,7 +2188,21 @@ function ResultView() {
               <button className="result-footer-more-button" onClick={() => setFooterMoreOpen((value) => !value)} aria-label="更多操作">•••</button>
               {footerMoreOpen ? (
                 <div className="result-footer-menu">
-                  <button onClick={() => { setFooterMoreOpen(false); exportObsidian() }}>保存到 Obsidian</button>
+                  <div className="result-footer-menu-label">选择 Obsidian 模板</div>
+                  {resultTemplates.length > 0 ? resultTemplates.map((template) => (
+                    <button
+                      key={template.id}
+                      className={template.id === resultTemplateId ? 'active' : ''}
+                      onClick={() => {
+                        setResultTemplateId(template.id)
+                        setFooterMoreOpen(false)
+                        setStatus(`已选择模板：${template.name}`)
+                      }}
+                    >
+                      <span>{template.name}</span>
+                      {template.id === resultTemplateId ? <b>✓</b> : null}
+                    </button>
+                  )) : <div className="result-footer-menu-empty">暂无模板</div>}
                 </div>
               ) : null}
             </div>
