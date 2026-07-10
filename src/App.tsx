@@ -104,6 +104,13 @@ type HotkeyConfig = {
   selectionHotkey: string
 }
 
+type TtsStatePayload = {
+  speaking: boolean
+  key?: string
+  reason?: string
+  error?: string
+}
+
 type ProviderUserConfig = {
   enabled: boolean; apiKey: string; baseUrl: string; model: string;
   customModels: string[]; stream: boolean; temperature: number; maxTokens: number; timeoutMs: number;
@@ -147,10 +154,12 @@ declare global {
       checkVaultPath: (relativePath: string) => Promise<{ exists: boolean }>
       deleteHistory: (recordIds: string[]) => Promise<InitialData>
       clearHistory: () => Promise<InitialData>
-      speak: (text: string) => Promise<{ ok: boolean }>
-      stopSpeak: () => Promise<{ ok: boolean }>
+      speak: (text: string, options?: { key?: string }) => Promise<{ ok: boolean; speaking?: boolean }>
+      stopSpeak: () => Promise<{ ok: boolean; speaking?: boolean }>
+      onTtsState: (callback: (payload: TtsStatePayload) => void) => () => void
       showMain: () => Promise<{ ok: boolean }>
       closeCurrent: () => Promise<{ ok: boolean }>
+      rendererLog?: (message: string) => void
       hideToolbar: () => Promise<{ ok: boolean }>
       resizeToolbar: (expanded: boolean) => Promise<{ ok: boolean }>
       toggleToolbarMore: () => Promise<{ ok: boolean; open: boolean }>
@@ -192,6 +201,10 @@ declare global {
 
 const newTemplateId = () => `obsidian_tpl_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
 
+// Toolbar tooltip needs a small transparent top breathing room inside the Electron window.
+const TOOLBAR_TOOLTIP_TOP_SPACE = 26
+const TOOLBAR_WINDOW_SIDE_PADDING = 20
+
 const emptySkill: Skill = {
   id: 'custom_skill',
   name: '自定义',
@@ -216,6 +229,33 @@ async function saveRecordToActiveObsidian(record: HistoryRecord) {
 
 function routeName() {
   return new URLSearchParams(window.location.search).get('route') || 'main'
+}
+
+function useDesktopTts() {
+  const [activeTtsKey, setActiveTtsKey] = useState('')
+
+  useEffect(() => {
+    return window.desktopApi.onTtsState((payload) => {
+      setActiveTtsKey(payload.speaking ? (payload.key || '') : '')
+    })
+  }, [])
+
+  const toggleDesktopSpeak = async (text: string, key: string) => {
+    if (activeTtsKey === key) {
+      await window.desktopApi.stopSpeak()
+      setActiveTtsKey('')
+      return
+    }
+
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+
+    setActiveTtsKey(key)
+    await window.desktopApi.speak(text, { key })
+  }
+
+  return { activeTtsKey, toggleDesktopSpeak }
 }
 
 export default function App() {
@@ -415,6 +455,7 @@ function tabSubtitle(tab: string) {
   const [editingConvId, setEditingConvId] = useState('')
   const [editingConvTitle, setEditingConvTitle] = useState('')
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const { activeTtsKey, toggleDesktopSpeak } = useDesktopTts()
 
   // ─── 选择模式 ───
   const [selectMode, setSelectMode] = useState(false)
@@ -619,6 +660,8 @@ function tabSubtitle(tab: string) {
                 selectedIds={selectedIds}
                 onToggleSelect={toggleSelectId}
                 onDelete={selectMode ? undefined : deleteSingle}
+                activeTtsKey={activeTtsKey}
+                onToggleSpeak={toggleDesktopSpeak}
               />
             )}
           </div>
@@ -668,7 +711,7 @@ function formatDateGroup(dateStr: string): string {
   return d.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
 }
 
-function DateGroupedRecords({ items, expandedIds, toggleExpand, selectMode, selectedIds, onToggleSelect, onDelete }: { items: HistoryRecord[]; expandedIds: Set<string>; toggleExpand: (id: string) => void; selectMode?: boolean; selectedIds?: Set<string>; onToggleSelect?: (id: string) => void; onDelete?: (id: string) => void }) {
+function DateGroupedRecords({ items, expandedIds, toggleExpand, selectMode, selectedIds, onToggleSelect, onDelete, activeTtsKey, onToggleSpeak }: { items: HistoryRecord[]; expandedIds: Set<string>; toggleExpand: (id: string) => void; selectMode?: boolean; selectedIds?: Set<string>; onToggleSelect?: (id: string) => void; onDelete?: (id: string) => void; activeTtsKey: string; onToggleSpeak: (text: string, key: string) => Promise<void> }) {
   const groups = useMemo(() => {
     const map = new Map<string, HistoryRecord[]>()
     for (const item of items) {
@@ -693,6 +736,8 @@ function DateGroupedRecords({ items, expandedIds, toggleExpand, selectMode, sele
               checked={selectedIds?.has(item.id)}
               onToggleSelect={onToggleSelect ? () => onToggleSelect(item.id) : undefined}
               onDelete={onDelete}
+              activeTtsKey={activeTtsKey}
+              onToggleSpeak={onToggleSpeak}
             />
           ))}
         </div>
@@ -701,9 +746,11 @@ function DateGroupedRecords({ items, expandedIds, toggleExpand, selectMode, sele
   )
 }
 
-function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSelect, onDelete }: { item: HistoryRecord; expanded: boolean; onToggle: () => void; selectMode?: boolean; checked?: boolean; onToggleSelect?: () => void; onDelete?: (id: string) => void }) {
+function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSelect, onDelete, activeTtsKey, onToggleSpeak }: { item: HistoryRecord; expanded: boolean; onToggle: () => void; selectMode?: boolean; checked?: boolean; onToggleSelect?: () => void; onDelete?: (id: string) => void; activeTtsKey: string; onToggleSpeak: (text: string, key: string) => Promise<void> }) {
   const [actionStatus, setActionStatus] = useState('')
   const isRunning = item.status === 'running'
+  const ttsKey = `history:${item.id}:answer`
+  const isSpeaking = activeTtsKey === ttsKey
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -749,7 +796,7 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
             <div className="record-actions-left">
               <button className="pill-btn" onClick={(e) => { e.stopPropagation(); window.desktopApi.copyText(item.answerMarkdown); setActionStatus('\u5df2\u590d\u5236') }}>复制</button>
               <button className="pill-btn" onClick={(e) => { e.stopPropagation(); saveRecordToActiveObsidian(item).then((r) => setActionStatus('\u5df2\u4fdd\u5b58\uff1a' + r.path)).catch((err) => setActionStatus(err instanceof Error ? err.message : String(err))) }}>保存到 Obsidian</button>
-              <button className="pill-btn" onClick={(e) => { e.stopPropagation(); window.desktopApi.speak(item.answerMarkdown) }}>朗读</button>
+              <button className="pill-btn" onClick={(e) => { e.stopPropagation(); void onToggleSpeak(item.answerMarkdown, ttsKey) }}>{isSpeaking ? '停止' : '朗读'}</button>
             </div>
             <button className="pill-btn danger" onClick={handleDelete}>删除</button>
             {actionStatus ? <span className="action-status">{actionStatus}</span> : null}
@@ -1577,7 +1624,10 @@ function ToolbarView() {
       const rect = toolbarRef.current?.getBoundingClientRect()
       if (!rect) return
       console.log('toolbar measured rect', rect)
-      window.desktopApi.setToolbarSize({ width: rect.width + 20, height: rect.height })
+      window.desktopApi.setToolbarSize({
+        width: Math.ceil(rect.width + TOOLBAR_WINDOW_SIDE_PADDING),
+        height: Math.ceil(rect.height + TOOLBAR_TOOLTIP_TOP_SPACE + 2),
+      })
     })
     return () => cancelAnimationFrame(frame)
   }, [actionSignature, busySkill, visible, moreOpen])
@@ -1706,6 +1756,7 @@ function ResultView() {
   const renderTiming = useRef<{ readyAt: number; firstUpdateAt: number; firstPaintAt: number; updateCount: number; doneAt: number; timer: any }>({ readyAt: 0, firstUpdateAt: 0, firstPaintAt: 0, updateCount: 0, doneAt: 0, timer: null })
   const resultCardRef = useRef<HTMLDivElement>(null)
   const resultDragRef = useRef({ active: false, startX: 0, startY: 0, winX: 0, winY: 0 })
+  const { activeTtsKey, toggleDesktopSpeak } = useDesktopTts()
 
   useEffect(() => {
     const offReady = window.desktopApi.onResultReady((next) => {
@@ -1775,6 +1826,9 @@ function ResultView() {
   }, [])
 
   if (!record) return <div className="result-card empty-result">等待划词结果...</div>
+
+  const resultTtsKey = `result:${record.id || record.runId || runIdRef.current || 'current'}:answer`
+  const resultSpeaking = activeTtsKey === resultTtsKey
 
   const copy = async () => {
     await window.desktopApi.copyText(record.answerMarkdown)
@@ -1859,7 +1913,7 @@ function ResultView() {
         footer={(
           <>
             <button onClick={copy}><span>⧉</span>复制</button>
-            <button onClick={() => window.desktopApi.speak(record.answerMarkdown)}><span>◖</span>朗读</button>
+            <button onClick={() => void toggleDesktopSpeak(record.answerMarkdown, resultTtsKey)}><span>◖</span>{resultSpeaking ? '停止' : '朗读'}</button>
             <button onClick={() => window.desktopApi.runSkill(record.skillId, record.selectedText)}><span>↻</span>重新生成</button>
             <div className="result-footer-spacer" />
             <div className="result-footer-more">
@@ -1906,14 +1960,33 @@ function ResultView() {
 /* ───── 发音卡片 ───── */
 
 function PronunciationCard({ data, answer, status }: { data: PronunciationData; answer: string; status: string }) {
+  const [speakingLang, setSpeakingLang] = useState<'' | 'en-US' | 'en-GB'>('')
+
+  useEffect(() => {
+    return () => {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+    }
+  }, [])
+
   const handlePlay = (e: React.MouseEvent, lang: 'en-US' | 'en-GB') => {
     e.preventDefault()
     e.stopPropagation()
-    speechSynthesis.cancel()
+
+    if (speakingLang === lang && window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel()
+      setSpeakingLang('')
+      return
+    }
+
+    void window.desktopApi.stopSpeak()
+    window.speechSynthesis.cancel()
     const utterance = new SpeechSynthesisUtterance(data.text)
     utterance.lang = lang
     utterance.rate = lang === 'en-GB' ? 0.95 : 1.0
-    speechSynthesis.speak(utterance)
+    utterance.onend = () => setSpeakingLang('')
+    utterance.onerror = () => setSpeakingLang('')
+    setSpeakingLang(lang)
+    window.speechSynthesis.speak(utterance)
   }
 
   const isRunning = status === 'running'
@@ -1925,10 +1998,10 @@ function PronunciationCard({ data, answer, status }: { data: PronunciationData; 
           <h3 className="pron-word">{data.text}</h3>
           <div className="pron-chips">
             <button className="pron-chip" onClick={(e) => handlePlay(e, 'en-US')} disabled={isRunning}>
-              US {data.us_ipa ? <span className="pron-ipa">/{data.us_ipa}/</span> : null} 🔊
+              {speakingLang === 'en-US' ? 'US 停止' : <>US {data.us_ipa ? <span className="pron-ipa">/{data.us_ipa}/</span> : null} 🔊</>}
             </button>
             <button className="pron-chip" onClick={(e) => handlePlay(e, 'en-GB')} disabled={isRunning}>
-              GB {data.gb_ipa ? <span className="pron-ipa">/{data.gb_ipa}/</span> : null} 🔊
+              {speakingLang === 'en-GB' ? 'GB 停止' : <>GB {data.gb_ipa ? <span className="pron-ipa">/{data.gb_ipa}/</span> : null} 🔊</>}
             </button>
           </div>
         </>
@@ -1936,8 +2009,8 @@ function PronunciationCard({ data, answer, status }: { data: PronunciationData; 
         <>
           <p className="pron-sentence">{data.text}</p>
           <div className="pron-chips">
-            <button className="pron-chip" onClick={(e) => handlePlay(e, 'en-US')} disabled={isRunning}>US 朗读句子 🔊</button>
-            <button className="pron-chip" onClick={(e) => handlePlay(e, 'en-GB')} disabled={isRunning}>GB 朗读句子 🔊</button>
+            <button className="pron-chip" onClick={(e) => handlePlay(e, 'en-US')} disabled={isRunning}>{speakingLang === 'en-US' ? 'US 停止' : 'US 朗读句子 🔊'}</button>
+            <button className="pron-chip" onClick={(e) => handlePlay(e, 'en-GB')} disabled={isRunning}>{speakingLang === 'en-GB' ? 'GB 停止' : 'GB 朗读句子 🔊'}</button>
           </div>
         </>
       )}

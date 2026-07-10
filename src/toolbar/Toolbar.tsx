@@ -49,8 +49,9 @@ export function Toolbar({
       onMouseLeave={onPointerLeave}
     >
       <div ref={toolbarRef} className="toolbar-shell">
-        <button className="drag-handle" onMouseDown={onGripDown} title="拖拽">
+        <button className="drag-handle" onMouseDown={onGripDown} aria-label="拖拽" type="button">
           <svg viewBox="0 0 12 18" width="14" height="18"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/><circle cx="3" cy="15" r="1.4"/><circle cx="9" cy="15" r="1.4"/></svg>
+          <span className="toolbar-tooltip" role="tooltip">拖拽</span>
         </button>
         {actions.map((action) => {
           if (action.kind === 'more') {
@@ -61,11 +62,12 @@ export function Toolbar({
                   ref={moreBtnRef}
                   className={'tool-btn' + (moreOpen ? ' active' : '')}
                   aria-label={action.label}
-                  title={action.label}
+                  type="button"
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={handleMoreClick}
                 >
                   <SkillIcon iconKey={action.iconKey} />
+                  <span className="toolbar-tooltip" role="tooltip">{action.label}</span>
                 </button>
               </Fragment>
             )
@@ -74,12 +76,14 @@ export function Toolbar({
             <button
               key={action.id}
               className="tool-btn"
+              aria-label={action.skill ? action.skill.name : action.label}
+              type="button"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={() => onRunSkill(action.id)}
               disabled={Boolean(busySkill)}
-              title={action.skill ? action.skill.name : action.label}
             >
               <SkillIcon iconKey={action.iconKey} />
+              <span className="toolbar-tooltip" role="tooltip">{action.skill ? action.skill.name : action.label}</span>
             </button>
           )
         })}

@@ -154,6 +154,8 @@ let _perfAttemptId = null;
 
 let suppressNextOutsideClick = null;
 let speakProcess = null;
+let speakToken = 0;
+let currentTtsKey = '';
 let selectionHelperProcess = null;
 let toolbarHideTimer = null;
 let toolbarPointerInside = false;
@@ -215,7 +217,9 @@ const RESULT_MAX_HEIGHT = 640;
 const TOOLBAR_DEFAULT_WIDTH = 620;
 const TOOLBAR_MIN_WIDTH = 1;
 const TOOLBAR_MAX_WIDTH = 900;
-const TOOLBAR_FIXED_HEIGHT = 52;
+const TOOLBAR_VISUAL_HEIGHT = 52;
+const TOOLBAR_TOOLTIP_TOP_SPACE = 26;
+const TOOLBAR_FIXED_HEIGHT = TOOLBAR_VISUAL_HEIGHT + TOOLBAR_TOOLTIP_TOP_SPACE;
 const TOOLBAR_MORE_FIXED_WIDTH = 190;
 const TOOLBAR_MORE_FIXED_HEIGHT = 180;
 let toolbarFixedWidth = TOOLBAR_DEFAULT_WIDTH;
@@ -560,7 +564,7 @@ function createToolbarWindow() {
     },
   });
   toolbarWindow.loadURL(routeUrl('toolbar'));
-  toolbarWindow._visualHeight = TOOLBAR_FIXED_HEIGHT;
+  toolbarWindow._visualHeight = TOOLBAR_VISUAL_HEIGHT;
 }
 
 function createToolbarMoreWindow() {
@@ -811,19 +815,36 @@ function getBestBrowserCandidateRect(picked) {
 function placeToolbarNearSelection() {
   if (!toolbarWindow) return;
   const width = toolbarFixedWidth;
-  const visualHeight = TOOLBAR_FIXED_HEIGHT;
+  // Keep the visible toolbar position based on the original visual height.
+  // The real BrowserWindow is slightly taller so the hover tooltip can render above it without clipping.
+  const visualHeight = TOOLBAR_VISUAL_HEIGHT;
+  const windowHeight = TOOLBAR_FIXED_HEIGHT;
 
   const anchorRect = getSelectionAnchorRect();
-  if (!anchorRect) return placeWindowNearCursor(toolbarWindow, width, visualHeight);
+  if (!anchorRect) return placeWindowNearCursor(toolbarWindow, width, windowHeight);
 
   const display = screen.getDisplayNearestPoint({ x: anchorRect.x + anchorRect.width / 2, y: anchorRect.y + anchorRect.height / 2 });
-  const bounds = toolbarPositionMode === 'manual'
-    ? {
-        ...clampWindowToWorkArea(toolbarManualPosition.x, toolbarManualPosition.y, width, visualHeight, display.workArea, 8),
-        width,
-        height: visualHeight,
-      }
-    : calculateToolbarBounds({ anchorRect, toolbarWidth: width, toolbarHeight: visualHeight, workArea: display.workArea });
+  let bounds;
+  if (toolbarPositionMode === 'manual') {
+    bounds = {
+      ...clampWindowToWorkArea(toolbarManualPosition.x, toolbarManualPosition.y, width, windowHeight, display.workArea, 8),
+      width,
+      height: windowHeight,
+    };
+  } else {
+    const visualBounds = calculateToolbarBounds({ anchorRect, toolbarWidth: width, toolbarHeight: visualHeight, workArea: display.workArea });
+    bounds = {
+      x: visualBounds.x,
+      y: visualBounds.y - TOOLBAR_TOOLTIP_TOP_SPACE,
+      width,
+      height: windowHeight,
+    };
+    bounds = {
+      ...clampWindowToWorkArea(bounds.x, bounds.y, bounds.width, bounds.height, display.workArea, 8),
+      width,
+      height: windowHeight,
+    };
+  }
   toolbarWindow.setBounds(bounds, false);
 }
 
@@ -1660,9 +1681,10 @@ function handleGlobalClick(line) {
 
   const toolbarBounds = toolbarVisible ? toolbarWindow.getBounds() : null;
   const toolbarPad = toolbarExpanded ? 10 : 6;
-  const visualHeight = toolbarVisible ? (toolbarBounds.height || toolbarWindow._visualHeight) : 0;
+  const visualTop = toolbarBounds ? toolbarBounds.y + TOOLBAR_TOOLTIP_TOP_SPACE : 0;
+  const visualHeight = toolbarVisible ? (toolbarWindow._visualHeight || TOOLBAR_VISUAL_HEIGHT) : 0;
   const insideToolbar = toolbarBounds
-    ? x >= toolbarBounds.x - toolbarPad && x <= toolbarBounds.x + toolbarBounds.width + toolbarPad && y >= toolbarBounds.y - toolbarPad && y <= toolbarBounds.y + visualHeight + toolbarPad
+    ? x >= toolbarBounds.x - toolbarPad && x <= toolbarBounds.x + toolbarBounds.width + toolbarPad && y >= visualTop - toolbarPad && y <= visualTop + visualHeight + toolbarPad
     : false;
   const moreBounds = toolbarMoreWindow && !toolbarMoreWindow.isDestroyed() && toolbarMoreWindow.isVisible()
     ? toolbarMoreWindow.getBounds()
@@ -2114,18 +2136,56 @@ function listVaultMarkdownFiles(vaultPath) {
   return results.sort();
 }
 
-function speak(text) {
-  if (speakProcess) speakProcess.kill();
-  const safe = String(text || '').replace(/'/g, "''");
-  const script = `Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 0; $s.Speak('${safe}')`;
-  speakProcess = execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true });
+function emitTtsState(payload) {
+  for (const win of [mainWindow, resultWindow, toolbarWindow, toolbarMoreWindow]) {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('tts:state', payload);
+    }
+  }
 }
 
-function stopSpeak() {
+function speak(text, options = {}) {
+  const key = typeof options === 'object' && options ? String(options.key || '') : '';
+  const token = ++speakToken;
+
   if (speakProcess) {
-    speakProcess.kill();
+    try { speakProcess.kill(); } catch {}
     speakProcess = null;
   }
+
+  const safe = String(text || '').replace(/'/g, "''");
+  const script = `Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 0; $s.Speak('${safe}')`;
+  const child = execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true });
+  speakProcess = child;
+  currentTtsKey = key;
+  emitTtsState({ speaking: true, key, reason: 'start' });
+
+  child.once('close', () => {
+    if (speakToken !== token || speakProcess !== child) return;
+    speakProcess = null;
+    const endedKey = currentTtsKey;
+    currentTtsKey = '';
+    emitTtsState({ speaking: false, key: endedKey, reason: 'ended' });
+  });
+
+  child.once('error', (error) => {
+    if (speakToken !== token || speakProcess !== child) return;
+    speakProcess = null;
+    const endedKey = currentTtsKey;
+    currentTtsKey = '';
+    emitTtsState({ speaking: false, key: endedKey, reason: 'error', error: String(error && error.message ? error.message : error) });
+  });
+}
+
+function stopSpeak(reason = 'stop') {
+  const stoppedKey = currentTtsKey;
+  speakToken += 1;
+  if (speakProcess) {
+    try { speakProcess.kill(); } catch {}
+    speakProcess = null;
+  }
+  currentTtsKey = '';
+  emitTtsState({ speaking: false, key: stoppedKey, reason });
 }
 
 /* ───── 对话管理 ───── */
@@ -2555,13 +2615,13 @@ ipcMain.handle('history:clear', () => updateStore((store) => {
   store.history = [];
   return store;
 }));
-ipcMain.handle('tts:speak', (_event, text) => {
-  speak(text);
-  return { ok: true };
+ipcMain.handle('tts:speak', (_event, text, options) => {
+  speak(text, options);
+  return { ok: true, speaking: true };
 });
 ipcMain.handle('tts:stop', () => {
-  stopSpeak();
-  return { ok: true };
+  stopSpeak('manual');
+  return { ok: true, speaking: false };
 });
 ipcMain.handle('window:show-main', () => {
   showMain();

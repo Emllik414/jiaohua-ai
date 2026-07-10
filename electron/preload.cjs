@@ -1,4 +1,4 @@
-﻿const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('desktopApi', {
   getInitialData: () => ipcRenderer.invoke('app:get-initial-data'),
@@ -28,8 +28,13 @@ contextBridge.exposeInMainWorld('desktopApi', {
 
   deleteHistory: (recordIds) => ipcRenderer.invoke('history:delete', recordIds),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
-  speak: (text) => ipcRenderer.invoke('tts:speak', text),
+  speak: (text, options) => ipcRenderer.invoke('tts:speak', text, options),
   stopSpeak: () => ipcRenderer.invoke('tts:stop'),
+  onTtsState: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('tts:state', listener);
+    return () => ipcRenderer.removeListener('tts:state', listener);
+  },
   showMain: () => ipcRenderer.invoke('window:show-main'),
   closeCurrent: () => ipcRenderer.invoke('window:close-current'),
   rendererLog: (msg) => ipcRenderer.send('renderer-log', msg),

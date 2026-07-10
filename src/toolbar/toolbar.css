@@ -1,4 +1,4 @@
-﻿.toolbar-layer,
+.toolbar-layer,
 .more-menu-layer,
 .result-card-v2 {
   --ui-accent: #2563eb;
@@ -19,6 +19,8 @@
   max-width: max-content;
   display: inline-flex;
   flex: 0 0 auto;
+  padding-top: 26px; /* just enough room for the hover bubble */
+  box-sizing: border-box;
   background: transparent;
   opacity: 1;
   pointer-events: auto;
@@ -38,10 +40,15 @@
   gap: 6px;
   padding: 6px;
   height: 50px;
-  border-radius: 19px;
-  border: 1px solid rgba(226,232,240,.94);
-  background: rgba(255,255,255,.96);
-  box-shadow: 0 4px 10px rgba(15,23,42,.06);
+  border-radius: 21px;
+  border: 1px solid rgba(226, 232, 240, .72);
+  background: rgba(255, 255, 255, .90);
+  box-shadow:
+    0 10px 28px rgba(15, 23, 42, .085),
+    0 2px 8px rgba(15, 23, 42, .045),
+    inset 0 1px 0 rgba(255, 255, 255, .78);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
   white-space: nowrap;
   box-sizing: border-box;
   overflow: visible;
@@ -61,7 +68,7 @@
 .toolbar-layer.dragging .toolbar-shell {
   cursor: grabbing;
   transform: scale(1.02);
-  box-shadow: 0 6px 14px rgba(15,23,42,.08);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, .11);
 }
 
 .drag-handle {
@@ -81,7 +88,7 @@
 }
 
 .drag-handle:hover {
-  background: #f1f5f9;
+  background: rgba(241, 245, 249, .82);
   color: #64748b;
 }
 
@@ -122,7 +129,7 @@
 
 .tool-btn:hover,
 .tool-btn.active {
-  background: #eef5ff;
+  background: rgba(238, 245, 255, .86);
   color: var(--ui-accent, #2563eb);
   transform: translateY(-1px);
 }
@@ -135,7 +142,69 @@
   opacity: 0.5;
 }
 
+/** 自定义工具条 tooltip：替代原生 title，鼠标进入立即出现 */
+.drag-handle,
+.tool-btn {
+  overflow: visible;
+}
 
+.toolbar-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%) translateY(2px) scale(.98);
+  min-width: max-content;
+  max-width: 180px;
+  padding: 4.5px 8px 5px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  background: linear-gradient(180deg, rgba(39, 39, 42, .98), rgba(18, 18, 20, .98));
+  color: rgba(255, 255, 255, .96);
+  box-shadow:
+    0 10px 26px rgba(2, 6, 23, .24),
+    0 2px 8px rgba(2, 6, 23, .13),
+    inset 0 1px 0 rgba(255, 255, 255, .075);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -.01em;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  z-index: 40;
+  will-change: opacity, transform;
+  transition:
+    opacity 45ms ease-out,
+    transform 65ms cubic-bezier(.16, 1, .3, 1),
+    visibility 0s linear 45ms;
+}
+
+.toolbar-tooltip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: calc(100% - 1px);
+  transform: translateX(-50%);
+  width: 8px;
+  height: 8px;
+  background: rgba(18, 18, 20, .98);
+  border-right: 1px solid rgba(255, 255, 255, .08);
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  border-bottom-right-radius: 2px;
+  rotate: 45deg;
+}
+
+.drag-handle:hover .toolbar-tooltip,
+.tool-btn:hover .toolbar-tooltip,
+.drag-handle:focus-visible .toolbar-tooltip,
+.tool-btn:focus-visible .toolbar-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+  transition-delay: 0ms;
+}
 
 .toolbar-separator {
   width: 1px;
