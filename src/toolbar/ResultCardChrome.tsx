@@ -42,6 +42,8 @@ export function ResultCardChrome({
   const innerCardRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
  const frameRef = useRef<number | null>(null);
+  const resizeTimerRef = useRef<number | null>(null);
+  const lastResizeAtRef = useRef(0);
   const autoFollowRef = useRef(true);
   const headerRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef<HTMLDivElement>(null);
@@ -58,19 +60,26 @@ export function ResultCardChrome({
   }, []);
 
   const scheduleResize = () => {
-    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-    frameRef.current = requestAnimationFrame(() => {
-      frameRef.current = null;
-      const el = effectiveRef.current;
-      if (!el) return;
-      const headerH = headerRef.current?.offsetHeight ?? 0;
-      const sourceH = sourceRef.current?.offsetHeight ?? 0;
-      const answerH = answerRef.current?.scrollHeight ?? scrollRef.current?.scrollHeight ?? 0;
-      const footerH = footerRef.current?.offsetHeight ?? 0;
-      const chromeExtra = 24;
-      const h = Math.ceil(headerH + sourceH + answerH + footerH + chromeExtra);
-      if (h > 0) { try { (window.desktopApi as any).resizeResultBox?.({ height: h }); } catch (_) {} }
-    });
+    if (resizeTimerRef.current !== null) return;
+    const elapsed = performance.now() - lastResizeAtRef.current;
+    const delay = Math.max(0, 120 - elapsed);
+    resizeTimerRef.current = window.setTimeout(() => {
+      resizeTimerRef.current = null;
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      frameRef.current = requestAnimationFrame(() => {
+        frameRef.current = null;
+        lastResizeAtRef.current = performance.now();
+        const el = effectiveRef.current;
+        if (!el) return;
+        const headerH = headerRef.current?.offsetHeight ?? 0;
+        const sourceH = sourceRef.current?.offsetHeight ?? 0;
+        const answerH = answerRef.current?.scrollHeight ?? scrollRef.current?.scrollHeight ?? 0;
+        const footerH = footerRef.current?.offsetHeight ?? 0;
+        const chromeExtra = 24;
+        const h = Math.ceil(headerH + sourceH + answerH + footerH + chromeExtra);
+        if (h > 0) { try { (window.desktopApi as any).resizeResultBox?.({ height: h }); } catch (_) {} }
+      });
+    }, delay);
   };
 
   useEffect(() => {
@@ -80,7 +89,11 @@ export function ResultCardChrome({
     scheduleResize();
     const obs = new ResizeObserver(() => scheduleResize());
     obs.observe(el);
-    return () => obs.disconnect();
+    return () => {
+      obs.disconnect();
+      if (resizeTimerRef.current !== null) window.clearTimeout(resizeTimerRef.current);
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    };
   }, [popIn, effectiveRef]);
 
   useEffect(() => { scheduleResize(); }, [children]);
@@ -108,7 +121,9 @@ export function ResultCardChrome({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !autoFollowRef.current) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    // Do not restart a smooth-scroll animation for every streamed frame.
+    // Direct tracking keeps text and viewport moving at exactly the same rate.
+    el.scrollTop = el.scrollHeight;
   }, [children]);
 
   return (

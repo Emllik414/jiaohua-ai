@@ -386,6 +386,21 @@ function getIconKeyFromLegacy(skillId, skillName, oldIcon) {
   }
   return 'spark';
 }
+const BUILTIN_SKILL_IDS = new Set(['copy', 'pronunciation']);
+
+function normalizeStoredSkill(skill) {
+  if (BUILTIN_SKILL_IDS.has(skill.id)) {
+    skill.type = 'builtin';
+    skill.builtinAction = skill.id === 'copy' ? 'copy' : 'pronunciation';
+    skill.deletable = false;
+  } else {
+    skill.type = 'ai';
+    skill.deletable = true;
+    delete skill.builtinAction;
+  }
+  if (!skill.iconKey) skill.iconKey = getIconKeyFromLegacy(skill.id, skill.name, skill.icon);
+  return skill;
+}
 function dataDir() {
   const dir = path.join(app.getPath('userData'), 'data');
   fs.mkdirSync(dir, { recursive: true });
@@ -494,11 +509,7 @@ function readStore() {
             parsed_skills.push(def);
           }
         }
-        parsed_skills.forEach(function(s) {
-          if (!s.iconKey) {
-            s.iconKey = getIconKeyFromLegacy(s.id, s.name, s.icon);
-          }
-        });
+        parsed_skills.forEach(normalizeStoredSkill);
         return parsed_skills;
       })(),
       history: Array.isArray(parsed.history) ? parsed.history : [],

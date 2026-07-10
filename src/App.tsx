@@ -557,22 +557,23 @@ function tabSubtitle(tab: string) {
     return conversations.filter((c) => !q || c.title.toLowerCase().includes(q))
   }, [conversations, convSearch])
 
-  const sortedConvs = useMemo(() => {
-    const pinned = filteredConvs.filter((c) => c.pinned).sort((a, b) => (b.pinnedAt || b.updatedAt || b.lastActivityAt).localeCompare(a.pinnedAt || a.updatedAt || a.lastActivityAt))
-    const unpinned = filteredConvs.filter((c) => !c.pinned).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
-    return [...pinned, ...unpinned]
-  }, [filteredConvs])
-
-  // ─── 对话分组 ───
+  // 置顶对话拥有独立分组，不再参与日期分组。
   const convGroups = useMemo(() => {
+    const pinned = filteredConvs
+      .filter((c) => c.pinned)
+      .sort((a, b) => (b.pinnedAt || b.updatedAt).localeCompare(a.pinnedAt || a.updatedAt))
+    const unpinned = filteredConvs
+      .filter((c) => !c.pinned)
+      .sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
     const map = new Map<string, Conversation[]>()
-    for (const c of sortedConvs) {
+    for (const c of unpinned) {
       const key = formatDateGroup(c.lastActivityAt)
       if (!map.has(key)) map.set(key, [])
       map.get(key)!.push(c)
     }
-    return Array.from(map.entries())
-  }, [sortedConvs])
+    const dated = Array.from(map.entries())
+    return pinned.length ? ([['置顶', pinned], ...dated] as [string, Conversation[]][]) : dated
+  }, [filteredConvs])
 
   const enterSelectMode = () => { setSelectMode(true); setSelectedIds(new Set()) }
   const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()) }
@@ -766,13 +767,13 @@ function ConversationItem({ conv, active, editing, editTitle, recordCount, onSel
         <input className="conv-edit-input" value={editTitle} onChange={(e) => onEditStart(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') onEditConfirm() }} onBlur={onEditConfirm} autoFocus onClick={(e) => e.stopPropagation()} />
       ) : (
         <>
-          <div className="conversation-item-title">{conv.pinned ? '📌 ' : ''}{conv.title}</div>
+          <div className="conversation-item-title">{conv.title}</div>
           <div className="conversation-item-meta">{recordCount} 条记录</div>
           {active ? (
             <div className="conv-actions" onClick={(e) => e.stopPropagation()}>
-              <button title="重命名" onClick={() => onEditStart(conv.title)}>✏️</button>
-              <button title={conv.pinned ? '取消置顶' : '置顶'} onClick={onPin}>{conv.pinned ? '📌' : '📍'}</button>
-              <button title="删除" onClick={onDelete}>🗑️</button>
+              <button title="重命名" aria-label="重命名" onClick={() => onEditStart(conv.title)}><SkillIcon iconKey="pen" /></button>
+              <button className={conv.pinned ? 'active' : ''} title={conv.pinned ? '取消置顶' : '置顶'} aria-label={conv.pinned ? '取消置顶' : '置顶'} onClick={onPin}><SkillIcon iconKey="pin" /></button>
+              <button title="删除" aria-label="删除" onClick={onDelete}><SkillIcon iconKey="trash" /></button>
             </div>
           ) : null}
         </>
@@ -1087,8 +1088,7 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
   )
 }
 function isCustomSkill(skill: Skill) {
-  if (skill.deletable === false) return false
-  return skill.id.startsWith('custom_') || skill.id === 'custom_skill'
+  return skill.deletable !== false && skill.type !== 'builtin'
 }
 
 
@@ -1257,11 +1257,13 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
         ? (dragOverPosition === 'after' ? ' drag-over-after' : ' drag-over-before')
         : ''
     return (
-      <div
+      <motion.div
         key={skill.id}
+        layout
+        transition={{ layout: { type: 'spring', stiffness: 420, damping: 36, mass: 0.75 } }}
         className={'skill-row' + (draggingId === skill.id ? ' dragging' : '') + (menuSkill?.id === skill.id ? ' menu-open' : '') + dragClass}
         draggable
-        onDragStart={(event) => handleDragStart(event, skill.id)}
+        onDragStartCapture={(event) => handleDragStart(event, skill.id)}
         onDragOver={(event) => handleDragOver(event, skill.id)}
         onDragEnter={(event) => handleDragOver(event, skill.id)}
         onDrop={(event) => handleDrop(event, skill.id)}
@@ -1309,7 +1311,7 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
             }}>移到更多菜单</div>
           </div>
         ) : null}
-      </div>
+      </motion.div>
     )
   }
 
@@ -1992,6 +1994,16 @@ function ToolbarMoreView() {
   )
 }
 
+const STREAM_RENDER_INTERVAL_MS = 32
+
+function getStreamBatchSize(backlog: number) {
+  if (backlog > 320) return 40
+  if (backlog > 160) return 24
+  if (backlog > 80) return 14
+  if (backlog > 32) return 8
+  return 4
+}
+
 function ResultView() {
   const [record, setRecord] = useState<HistoryRecord | null>(null)
   const [sourceExpanded, setSourceExpanded] = useState(false)
@@ -2005,7 +2017,54 @@ function ResultView() {
   const renderTiming = useRef<{ readyAt: number; firstUpdateAt: number; firstPaintAt: number; updateCount: number; doneAt: number; timer: any }>({ readyAt: 0, firstUpdateAt: 0, firstPaintAt: 0, updateCount: 0, doneAt: 0, timer: null })
   const resultCardRef = useRef<HTMLDivElement>(null)
   const resultDragRef = useRef({ active: false, startX: 0, startY: 0, winX: 0, winY: 0 })
+  const streamTargetRef = useRef<HistoryRecord | null>(null)
+  const streamTimerRef = useRef<number | null>(null)
   const { activeTtsKey, toggleDesktopSpeak } = useDesktopTts()
+
+  const stopStreamPump = () => {
+    if (streamTimerRef.current !== null) {
+      window.clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+  }
+
+  const pumpStream = () => {
+    streamTimerRef.current = null
+    const target = streamTargetRef.current
+    if (!target) return
+
+    let needsAnotherFrame = false
+    setRecord((current) => {
+      if (!current || current.runId !== target.runId) return target
+      const shown = current.answerMarkdown || ''
+      const full = target.answerMarkdown || ''
+      if (!full.startsWith(shown)) return target
+
+      const backlog = full.length - shown.length
+      if (backlog <= 0) return target.status === 'running' ? { ...target, answerMarkdown: shown } : target
+
+      const preferredEnd = Math.min(full.length, shown.length + getStreamBatchSize(backlog))
+      const nearbyNewline = full.indexOf('\n', preferredEnd)
+      const sliceEnd = nearbyNewline >= 0 && nearbyNewline - preferredEnd <= 24 ? nearbyNewline + 1 : preferredEnd
+      needsAnotherFrame = sliceEnd < full.length || target.status === 'running'
+      return {
+        ...target,
+        status: sliceEnd < full.length ? 'running' : target.status,
+        answerMarkdown: full.slice(0, sliceEnd),
+      }
+    })
+
+    if (needsAnotherFrame && streamTimerRef.current === null) {
+      streamTimerRef.current = window.setTimeout(pumpStream, STREAM_RENDER_INTERVAL_MS)
+    }
+  }
+
+  const enqueueStreamUpdate = (next: HistoryRecord) => {
+    streamTargetRef.current = next
+    if (streamTimerRef.current === null) {
+      streamTimerRef.current = window.setTimeout(pumpStream, STREAM_RENDER_INTERVAL_MS)
+    }
+  }
 
   useEffect(() => {
     window.desktopApi.getInitialData().then((data) => {
@@ -2018,6 +2077,8 @@ function ResultView() {
 
   useEffect(() => {
     const offReady = window.desktopApi.onResultReady((next) => {
+      stopStreamPump()
+      streamTargetRef.current = next
       runIdRef.current = next.runId || ''
       renderTiming.current = { readyAt: Date.now(), firstUpdateAt: 0, firstPaintAt: 0, updateCount: 0, doneAt: 0, timer: null }
       if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] result:ready runId=' + next.runId); console.log('[RenderTiming] result:ready runId=' + next.runId)
@@ -2042,7 +2103,7 @@ function ResultView() {
           }, 500);
         }
       }
-      setRecord(next)
+      enqueueStreamUpdate(next)
       if (t.firstUpdateAt > 0 && t.firstPaintAt === 0) {
         requestAnimationFrame(function() {
           var rt = renderTiming.current;
@@ -2059,6 +2120,8 @@ function ResultView() {
       setConfirmSkillId(payload.skillId)
     })
     const offReset = window.desktopApi.onResultReset(() => {
+      stopStreamPump()
+      streamTargetRef.current = null
       if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] result:reset prevRunId=' + runIdRef.current); console.log('[RenderTiming] result:reset prevRunId=' + runIdRef.current);
       if (renderTiming.current.timer) { clearInterval(renderTiming.current.timer); renderTiming.current.timer = null; }
       runIdRef.current = ''
@@ -2067,6 +2130,7 @@ function ResultView() {
       setFooterMoreOpen(false)
     })
     return () => {
+      stopStreamPump()
       offReady()
       offUpdate()
       offConfirm()
@@ -2192,7 +2256,7 @@ function ResultView() {
             <button className="result-footer-action action-regenerate" aria-label="重新生成" onClick={() => window.desktopApi.runSkill(record.skillId, record.selectedText)}><SkillIcon iconKey="refresh" /><span className="result-action-tooltip" role="tooltip">重新生成</span></button>
             <button className="result-footer-action result-obsidian-button action-obsidian" aria-label="Obsidian 导入" onClick={() => void exportObsidian()}><SkillIcon iconKey="obsidian" /><span className="result-action-tooltip" role="tooltip">Obsidian 导入</span></button>
             <div className="result-footer-more">
-              <button className="result-footer-more-button" onClick={() => void toggleTemplateMenu()} aria-label="更多操作"><SkillIcon iconKey="more" /></button>
+              <button className="result-footer-more-button" onClick={() => void toggleTemplateMenu()} aria-label="更多操作"><SkillIcon iconKey="more" /><span className="result-action-tooltip" role="tooltip">更多</span></button>
               {footerMoreOpen ? (
                 <div className="result-footer-menu">
                   <div className="result-footer-menu-label">选择 Obsidian 模板</div>
@@ -2237,7 +2301,7 @@ function ResultView() {
         ) : (
         <section className={record.status === 'failed' ? 'answer-box failed' : 'answer-box'}>
           {record.pronunciationData ? <PronunciationCard data={record.pronunciationData} answer={record.answerMarkdown} status={record.status} /> : null}
-          {!record.pronunciationData && record.answerMarkdown ? <MarkdownView text={record.answerMarkdown} /> : null}
+          {!record.pronunciationData && record.answerMarkdown ? (record.status === 'running' ? <StreamingText text={record.answerMarkdown} /> : <MarkdownView text={record.answerMarkdown} />) : null}
           {!record.pronunciationData && !record.answerMarkdown ? <TypingDots /> : null}
         </section>
         )}
@@ -2303,7 +2367,7 @@ function PronunciationCard({ data, answer, status }: { data: PronunciationData; 
           </div>
         </>
       )}
-      {answer ? <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown></div> : null}
+      {answer ? (isRunning ? <StreamingText text={answer} /> : <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown></div>) : null}
       {isRunning && !answer ? <TypingDots /> : null}
     </div>
   )
@@ -2393,6 +2457,10 @@ function normalizeMarkdownText(text: string) {
 
 function MarkdownView({ text }: { text: string }) {
   return <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdownText(text)}</ReactMarkdown></div>
+}
+
+function StreamingText({ text }: { text: string }) {
+  return <div className="streaming-text">{text}<span className="streaming-caret" aria-hidden="true" /></div>
 }
 function normalizeIconKey(iconKey: string | undefined): string {
   return SKILL_ICON_KEYS.includes(iconKey as any) ? iconKey! : 'spark'

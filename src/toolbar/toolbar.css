@@ -400,12 +400,12 @@
 .result-card-header {
   position: relative;
   flex: 0 0 auto;
-  min-height: 78px;
+  min-height: 84px;
   display: grid;
   grid-template-columns: 30px minmax(0,1fr) 38px;
   align-items: center;
   column-gap: 10px;
-  padding: 18px 14px 12px;
+  padding: 20px 14px 14px;
   border-bottom: 1px solid rgba(148,163,184,.22);
   -webkit-app-region: drag;
 }
@@ -442,7 +442,7 @@
 
 .title-block { min-width: 0; }
 .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.title { font-weight: 700; font-size: 16px; line-height: 1.25; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.title { font-weight: 720; font-size: 18px; line-height: 1.25; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ai-pill { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: 12px; line-height: 1.15; font-weight: 700; color: #7c3aed; background: #f0e7ff; }
 .model-line { margin-top: 4px; color: #64748b; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -541,6 +541,25 @@
   animation: blink 900ms step-end infinite;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+.streaming-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ui-text);
+  font-size: 16px;
+  line-height: 1.75;
+  text-wrap: pretty;
+}
+.streaming-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -.12em;
+  border-radius: 2px;
+  background: var(--ui-accent);
+  animation: blink 800ms step-end infinite;
+}
 
 .status-line { color: #64748b; font-size: 14px; line-height: 1.6; padding: 8px 0; }
 
@@ -774,7 +793,7 @@ html, body, #root { overflow: hidden !important; }
 .result-card-footer {
   display: grid;
   grid-template-areas: "copy speak regenerate obsidian more";
-  grid-template-columns: minmax(0, .82fr) minmax(0, .82fr) minmax(0, 1.08fr) minmax(0, 1.42fr) 30px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) 30px;
   align-items: center;
   column-gap: 4px;
   min-height: 46px;
@@ -788,8 +807,7 @@ html, body, #root { overflow: hidden !important; }
   order: 0;
   min-width: 0;
   width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
   justify-content: center;
 }
 .result-card-footer > .result-footer-action svg { width: 16px; height: 16px; display: block; }
@@ -831,6 +849,8 @@ html, body, #root { overflow: hidden !important; }
 .result-card-footer button { min-width: 0; height: 30px; padding: 0 4px; font-size: 9.5px; }
 .result-card-footer .result-footer-more-button { width: 30px; }
 .result-card-footer .result-footer-more-button {
+  position: relative;
+  overflow: visible;
   display: grid;
   place-items: center;
   padding: 0;
@@ -838,6 +858,13 @@ html, body, #root { overflow: hidden !important; }
   letter-spacing: 0;
 }
 .result-card-footer .result-footer-more-button svg { width: 16px; height: 16px; display: block; }
+.result-footer-more-button:hover .result-action-tooltip,
+.result-footer-more-button:focus-visible .result-action-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+  transition-delay: 0s;
+}
 
 
 /* Native OS-level drag for the toolbar grip. This avoids JS/IPC coordinate drift. */

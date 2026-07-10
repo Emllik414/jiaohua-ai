@@ -1637,6 +1637,10 @@ textarea.template-textarea,
   padding: 8px;
   backdrop-filter: blur(18px);
 }
+.section-card:has(.skill-row.menu-open) {
+  position: relative;
+  z-index: 300;
+}
 .skill-menu.below { top: calc(100% + 6px); }
 .skill-menu.above { bottom: calc(100% + 6px); }
 .skill-menu-item {
@@ -1845,6 +1849,8 @@ textarea.template-textarea,
 .conversation-item:hover .conv-actions { display: flex; }
 .conversation-item .conv-actions button { width: 24px; height: 24px; padding: 0; display: grid; place-items: center; border: none; background: transparent; font-size: 12px; border-radius: 8px; cursor: pointer; }
 .conversation-item .conv-actions button:hover { background: rgba(15, 23, 42, 0.06); }
+.conversation-item .conv-actions button svg { width: 14px; height: 14px; display: block; }
+.conversation-item .conv-actions button.active { color: var(--ui-accent); background: var(--ui-accent-soft); }
 
 .records-pane { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
 .records-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
@@ -2086,9 +2092,9 @@ textarea.template-textarea,
 .skill-row.menu-open { z-index: 200; }
 
 .skill-row.dragging {
-  opacity: 0.52 !important;
-  transform: none !important;
-  box-shadow: none !important;
+  opacity: 0.62 !important;
+  transform: scale(.985) rotate(-.25deg) !important;
+  box-shadow: 0 16px 34px rgba(15,23,42,.12) !important;
   cursor: grabbing;
 }
 
@@ -2096,8 +2102,10 @@ textarea.template-textarea,
 .skill-row.drag-over-after {
   border-color: rgba(37, 99, 235, 0.22) !important;
   background: rgba(255, 255, 255, 0.96) !important;
-  transform: none !important;
+  transition: transform 170ms cubic-bezier(.2,.8,.2,1), border-color 150ms ease, background 150ms ease !important;
 }
+.skill-row.drag-over-before { transform: translateY(3px) !important; }
+.skill-row.drag-over-after { transform: translateY(-3px) !important; }
 
 .skill-row.drag-over-before::before,
 .skill-row.drag-over-after::after {
@@ -2125,7 +2133,7 @@ textarea.template-textarea,
 .skill-row.drag-over-before,
 .skill-row.drag-over-after,
 .skill-row.dragging * {
-  transition-duration: 40ms !important;
+  transition-duration: 160ms !important;
 }
 
 /* ===== UI redesign v2: appearance tokens ===== */
@@ -2389,6 +2397,25 @@ html, body, #root, .main-window-wrap, .main-glass-window { overflow: hidden !imp
   color: #fff !important;
   border-color: #6757e8 !important;
   background: #6757e8 !important;
+}
+
+:root[data-appearance='dark'] .tpl-dropdown {
+  color: var(--ui-text);
+  border-color: var(--ui-border);
+  background: var(--ui-panel-solid);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34);
+}
+:root[data-appearance='dark'] .tpl-item {
+  color: var(--ui-text);
+  background: transparent;
+}
+:root[data-appearance='dark'] .tpl-item:hover {
+  color: #d7d2ff;
+  background: rgba(168, 156, 255, 0.10);
+}
+:root[data-appearance='dark'] .tpl-item.active {
+  color: #c7c0ff;
+  background: rgba(168, 156, 255, 0.16);
 }
 
 @media (max-width: 960px) {
