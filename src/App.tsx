@@ -32,7 +32,10 @@ type Skill = {
   type?: 'ai' | 'builtin'
   builtinAction?: string
   deletable?: boolean
+  iconKey?: string
 }
+
+type AppearanceMode = 'light' | 'dark' | 'system'
 
 type PronunciationData = {
   mode: 'word' | 'sentence'
@@ -308,7 +311,7 @@ function MainView() {
       <div className="main-glass-window">
         <aside className="sidebar">
           <div className="brand">
-            <div className="brand-icon">🧤</div>
+            <div className="brand-icon"><SkillIcon iconKey="spark" /></div>
             <div>
               <div className="brand-title">饺划-AI划词助手</div>
               <div className="brand-sub">Selection Copilot</div>
@@ -316,22 +319,23 @@ function MainView() {
           </div>
           <nav className="nav">
             {[
-              ['history', '●', '历史对话'],
-              ['settings', '⚙', 'API 设置'],
-              ['skills', '◆', '技能管理'],
-              ['obsidian', '●', 'Obsidian 导入'],
+              ['history', 'history', '历史对话'],
+              ['settings', 'api', 'API 设置'],
+              ['skills', 'skills', '技能管理'],
+              ['obsidian', 'obsidian', 'Obsidian 导入'],
             ].map(([id, icon, label]) => (
               <div
                 key={id}
                 className={'nav-item' + (tab === id ? ' active' : '')}
                 onClick={() => setTab(id as typeof tab)}
               >
-                <span className="nav-icon">{icon}</span>
+                <span className="nav-icon"><SkillIcon iconKey={icon} /></span>
                 <span>{label}</span>
               </div>
             ))}
           </nav>
           <div className="sidebar-spacer" />
+          <AppearanceControl />
           <HotkeyCard />
           <div className="version">v1.0.0</div>
         </aside>
@@ -349,6 +353,71 @@ function MainView() {
           {tab === 'obsidian' && <ObsidianPanel settings={data.settings} onSave={saveSettings} dataDir={data.dataDir} templates={data.obsidianTemplates} />}
         </main>
       </div>
+    </div>
+  )
+}
+
+const APPEARANCE_STORAGE_KEY = 'jiaohua.appearance'
+
+function getStoredAppearance(): AppearanceMode {
+  const stored = localStorage.getItem(APPEARANCE_STORAGE_KEY)
+  return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
+}
+
+function applyAppearance(mode: AppearanceMode, systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  const resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
+  document.documentElement.dataset.appearance = resolved
+  document.documentElement.style.colorScheme = resolved
+}
+
+function AppearanceControl() {
+  const [mode, setMode] = useState<AppearanceMode>(getStoredAppearance)
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const sync = () => applyAppearance(mode, media.matches)
+    sync()
+    media.addEventListener('change', sync)
+    return () => media.removeEventListener('change', sync)
+  }, [mode])
+
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [])
+
+  const choose = (next: AppearanceMode) => {
+    localStorage.setItem(APPEARANCE_STORAGE_KEY, next)
+    setMode(next)
+    setOpen(false)
+  }
+
+  const labels: Record<AppearanceMode, string> = { light: '浅色', dark: '深色', system: '跟随系统' }
+  const icons: Record<AppearanceMode, string> = { light: 'sun', dark: 'moon', system: 'system' }
+
+  return (
+    <div className="appearance-control" ref={rootRef}>
+      <button className="appearance-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <SkillIcon iconKey={icons[mode]} />
+        <span>外观与颜色</span>
+        <em>{labels[mode]}</em>
+      </button>
+      {open ? (
+        <div className="appearance-menu">
+          {(['light', 'dark', 'system'] as AppearanceMode[]).map((item) => (
+            <button key={item} className={mode === item ? 'active' : ''} onClick={() => choose(item)}>
+              <SkillIcon iconKey={icons[item]} />
+              <span>{labels[item]}</span>
+              {mode === item ? <b>✓</b> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
