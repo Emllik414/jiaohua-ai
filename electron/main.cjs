@@ -1581,6 +1581,13 @@ function explicitCloseResultCard(reason) {
 }
 
 function hideToolbarViaCss() {
+  clearTimeout(toolbarHideTimer);
+
+  toolbarPointerInside = false;
+  toolbarMorePointerInside = false;
+  toolbarExpanded = false;
+  toolbarInteractionUntil = 0;
+
   hideToolbarMore();
   if (toolbarWindow && !toolbarWindow.isDestroyed()) {
     toolbarWindow.webContents.send('toolbar:hide');
@@ -1669,13 +1676,26 @@ function handleGlobalClick(line) {
     ? x >= resultBounds.x && x <= resultBounds.x + resultBounds.width && y >= resultBounds.y && y <= resultBounds.y + resultBounds.height
     : false;
 
-  if (toolbarVisible && (toolbarPointerInside || toolbarMorePointerInside || insideToolbar || insideMore)) {
+  const insideToolbarGroup = insideToolbar || insideMore;
+
+  if (toolbarVisible && insideToolbarGroup) {
     scheduleToolbarHide();
   } else if (toolbarVisible) {
     toolbarPointerInside = false;
     toolbarMorePointerInside = false;
     toolbarExpanded = false;
-    console.log('toolbar hide by outside click', { x, y, bounds: toolbarBounds });
+    toolbarInteractionUntil = 0;
+    console.log('toolbar hide by outside click', {
+      x,
+      y,
+      toolbarBounds,
+      moreBounds,
+      insideToolbar,
+      insideMore,
+      toolbarPointerInside,
+      toolbarMorePointerInside,
+      overlayState,
+    });
     hideToolbarViaCss();
   }
 
