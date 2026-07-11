@@ -10,7 +10,13 @@
     "128": "icon-128.png"
   },
   "description": "配合饺滑桌面端使用的浏览器划词增强插件",
-  "permissions": ["storage", "scripting"],
+  "permissions": [
+    "storage",
+    "scripting",
+    "tabs",
+    "webNavigation",
+    "alarms"
+  ],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {
