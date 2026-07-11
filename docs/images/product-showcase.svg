@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1600" viewBox="0 0 1200 1600" role="img" aria-labelledby="title desc">
+  <title id="title">饺滑-AI划词助手产品介绍与界面预览</title>
+  <desc id="desc">展示历史对话、技能管理、Obsidian 导入、划词结果卡片及核心功能。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d0b18"/>
+      <stop offset="0.55" stop-color="#171225"/>
+      <stop offset="1" stop-color="#24143c"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.38"/>
+    </filter>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="25"/>
+    </filter>
+    <style>
+      .sans{font-family:"Segoe UI","Microsoft YaHei","Noto Sans SC",sans-serif}
+      .title{font-size:62px;font-weight:800;fill:#fff;letter-spacing:1px}
+      .subtitle{font-size:25px;font-weight:500;fill:#c4b5fd}
+      .intro{font-size:20px;fill:#cbd5e1}
+      .card-title{font-size:22px;font-weight:750;fill:#fff}
+      .card-copy{font-size:15px;fill:#b8b4c8}
+      .panel-title{font-size:27px;font-weight:800;fill:#fff}
+      .panel-sub{font-size:15px;fill:#9893a8}
+      .ui-title{font-size:17px;font-weight:700;fill:#f5f3ff}
+      .ui-text{font-size:13px;fill:#b8b4c8}
+      .ui-small{font-size:11px;fill:#858096}
+      .chip{font-size:15px;font-weight:650;fill:#ddd6fe}
+    </style>
+  </defs>
+
+  <rect width="1200" height="1600" rx="34" fill="url(#bg)"/>
+  <circle cx="1020" cy="115" r="150" fill="#7c3aed" opacity="0.18" filter="url(#glow)"/>
+  <circle cx="170" cy="430" r="120" fill="#2563eb" opacity="0.11" filter="url(#glow)"/>
+
+  <!-- Header -->
+  <g class="sans">
+    <g transform="translate(70 62)">
+      <rect width="82" height="82" rx="25" fill="url(#accent)" filter="url(#shadow)"/>
+      <path d="M18 44c0-19 11-31 23-31 13 0 23 12 23 31 0 18-10 28-23 28-12 0-23-10-23-28z" fill="#fff4e6"/>
+      <circle cx="34" cy="43" r="3.8" fill="#2b2141"/>
+      <circle cx="51" cy="43" r="3.8" fill="#2b2141"/>
+      <path d="M35 55c5 4 10 4 15 0" fill="none" stroke="#ef7c8e" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="26" cy="52" r="5" fill="#f7a8b8" opacity="0.65"/>
+      <circle cx="59" cy="52" r="5" fill="#f7a8b8" opacity="0.65"/>
+    </g>
+    <text x="180" y="104" class="title">饺滑-AI划词助手</text>
+    <text x="183" y="146" class="subtitle">划词、对话、整理、导出，一站式桌面 AI 效率助手</text>
+    <text x="72" y="208" class="intro">选中文字即可调用 AI 技能，并把每一次结果沉淀为可搜索、可导出、可复用的知识资产。</text>
+  </g>
+
+  <!-- Feature cards -->
+  <g class="sans" transform="translate(70 255)">
+    <g transform="translate(0 0)">
+      <rect width="200" height="155" rx="22" fill="#1d182a" stroke="#41345d"/>
+      <circle cx="34" cy="34" r="19" fill="#7c3aed"/><text x="34" y="40" text-anchor="middle" fill="#fff" font-size="16" font-weight="800">1</text>
+      <text x="22" y="78" class="card-title">历史自动保存</text>
+      <text x="22" y="107" class="card-copy">每一次划词与对话</text><text x="22" y="129" class="card-copy">都可搜索、回看、整理</text>
+    </g>
+    <g transform="translate(215 0)">
+      <rect width="200" height="155" rx="22" fill="#1d182a" stroke="#41345d"/>
+      <circle cx="34" cy="34" r="19" fill="#7c3aed"/><text x="34" y="40" text-anchor="middle" fill="#fff" font-size="16" font-weight="800">2</text>
+      <text x="22" y="78" class="card-title">导入 / 导出</text>
+      <text x="22" y="107" class="card-copy">Obsidian、本地文件</text><text x="22" y="129" class="card-copy">TXT / MD / Word</text>
+    </g>
+    <g transform="translate(430 0)">
+      <rect width="200" height="155" rx="22" fill="#1d182a" stroke="#41345d"/>
+      <circle cx="34" cy="34" r="19" fill="#7c3aed"/><text x="34" y="40" text-anchor="middle" fill="#fff" font-size="16" font-weight="800">3</text>
+      <text x="22" y="78" class="card-title">自定义提示词</text>
+      <text x="22" y="107" class="card-copy">系统提示词、划词提示词</text><text x="22" y="129" class="card-copy">打造专属技能工作流</text>
+    </g>
+    <g transform="translate(645 0)">
+      <rect width="200" height="155" rx="22" fill="#1d182a" stroke="#41345d"/>
+      <circle cx="34" cy="34" r="19" fill="#7c3aed"/><text x="34" y="40" text-anchor="middle" fill="#fff" font-size="16" font-weight="800">4</text>
+      <text x="22" y="78" class="card-title">自由连接 API</text>
+      <text x="22" y="107" class="card-copy">按需配置服务商与模型</text><text x="22" y="129" class="card-copy">不被单一平台绑定</text>
+    </g>
+    <g transform="translate(860 0)">
+      <rect width="200" height="155" rx="22" fill="#1d182a" stroke="#41345d"/>
+      <circle cx="34" cy="34" r="19" fill="#7c3aed"/><text x="34" y="40" text-anchor="middle" fill="#fff" font-size="16" font-weight="800">5</text>
+      <text x="22" y="78" class="card-title">知识库沉淀</text>
+      <text x="22" y="107" class="card-copy">结果卡片一键导入</text><text x="22" y="129" class="card-copy">模板化整理 Obsidian</text>
+    </g>
+  </g>
+
+  <!-- History panel -->
+  <g class="sans" transform="translate(70 455)" filter="url(#shadow)">
+    <rect width="660" height="480" rx="26" fill="#16131f" stroke="#46385f"/>
+    <text x="28" y="43" class="panel-title">历史对话</text><text x="190" y="42" class="panel-sub">每次划词都会保存为一组轻量 AI 对话</text>
+    <rect x="24" y="66" width="150" height="385" rx="18" fill="#211c2c"/>
+    <text x="43" y="101" class="ui-title">饺滑</text><text x="43" y="120" class="ui-small">Selection Copilot</text>
+    <rect x="37" y="146" width="124" height="38" rx="10" fill="#3b2860"/>
+    <text x="55" y="170" class="ui-text">历史对话</text>
+    <text x="55" y="215" class="ui-text">API 设置</text><text x="55" y="256" class="ui-text">技能管理</text><text x="55" y="297" class="ui-text">Obsidian 导入</text>
+    <line x1="38" y1="323" x2="157" y2="323" stroke="#3b3447"/>
+    <text x="55" y="355" class="ui-small">外观与颜色　深色</text><text x="55" y="384" class="ui-small">划词快捷键　开启</text>
+    <rect x="194" y="76" width="280" height="38" rx="11" fill="#211d2a" stroke="#3b3447"/><text x="213" y="100" class="ui-small">搜索对话…</text>
+    <rect x="492" y="76" width="140" height="38" rx="11" fill="url(#accent)"/><text x="562" y="101" text-anchor="middle" fill="#fff" font-size="13" font-weight="700">＋ 新对话</text>
+    <rect x="194" y="132" width="175" height="299" rx="15" fill="#1c1825"/>
+    <text x="215" y="163" class="ui-small">昨天</text><rect x="207" y="177" width="149" height="58" rx="10" fill="#292035"/><text x="220" y="201" class="ui-text">新对话</text><text x="220" y="221" class="ui-small">5 条记录</text>
+    <rect x="207" y="244" width="149" height="58" rx="10" fill="#211c2b"/><text x="220" y="268" class="ui-text">英文</text><text x="220" y="288" class="ui-small">10 条记录</text>
+    <rect x="207" y="311" width="149" height="78" rx="10" fill="#3a2858"/><text x="220" y="338" class="ui-text">新对话</text><text x="220" y="360" class="ui-small">40 条记录</text>
+    <rect x="385" y="132" width="247" height="299" rx="15" fill="#1c1825"/>
+    <text x="405" y="163" class="ui-title">新对话</text><text x="548" y="163" class="ui-small">40 条记录</text>
+    <g fill="#292232">
+      <rect x="400" y="184" width="216" height="43" rx="9"/><rect x="400" y="235" width="216" height="43" rx="9"/><rect x="400" y="286" width="216" height="43" rx="9"/><rect x="400" y="337" width="216" height="43" rx="9"/>
+    </g>
+    <text x="417" y="204" class="ui-text">朗文翻译　 blockmap</text><text x="417" y="221" class="ui-small">06:25</text>
+    <text x="417" y="255" class="ui-text">朗文翻译　 API Key 安全</text><text x="417" y="272" class="ui-small">06:18</text>
+    <text x="417" y="306" class="ui-text">朗文翻译　 Audio</text><text x="417" y="323" class="ui-small">06:13</text>
+    <text x="417" y="357" class="ui-text">朗文翻译　 Kokoro-82M</text><text x="417" y="374" class="ui-small">06:13</text>
+  </g>
+
+  <!-- Skills panel -->
+  <g class="sans" transform="translate(755 455)" filter="url(#shadow)">
+    <rect width="375" height="480" rx="26" fill="#16131f" stroke="#46385f"/>
+    <text x="28" y="43" class="panel-title">技能管理</text><text x="28" y="67" class="panel-sub">自定义技能、图标与提示词</text>
+    <rect x="27" y="91" width="321" height="54" rx="13" fill="#231d2c"/><circle cx="55" cy="118" r="14" fill="#835af1"/><text x="78" y="114" class="ui-title">朗文翻译</text><text x="78" y="133" class="ui-small">AI 技能 · 弹出窗口</text>
+    <rect x="27" y="155" width="321" height="54" rx="13" fill="#231d2c"/><circle cx="55" cy="182" r="14" fill="#2563eb"/><text x="78" y="178" class="ui-title">搜索</text><text x="78" y="197" class="ui-small">AI 技能 · 弹出窗口</text>
+    <rect x="27" y="219" width="321" height="54" rx="13" fill="#231d2c"/><circle cx="55" cy="246" r="14" fill="#14b8a6"/><text x="78" y="242" class="ui-title">辅助阅读</text><text x="78" y="261" class="ui-small">AI 技能 · 弹出窗口</text>
+    <rect x="27" y="283" width="321" height="54" rx="13" fill="#231d2c"/><circle cx="55" cy="310" r="14" fill="#64748b"/><text x="78" y="306" class="ui-title">复制</text><text x="78" y="325" class="ui-small">系统内置技能</text>
+    <rect x="27" y="347" width="321" height="54" rx="13" fill="#231d2c"/><circle cx="55" cy="374" r="14" fill="#64748b"/><text x="78" y="370" class="ui-title">发音</text><text x="78" y="389" class="ui-small">系统内置技能</text>
+    <rect x="202" y="416" width="146" height="40" rx="12" fill="url(#accent)"/><text x="275" y="442" text-anchor="middle" fill="#fff" font-size="14" font-weight="750">＋ 新建技能</text>
+  </g>
+
+  <!-- Obsidian panel -->
+  <g class="sans" transform="translate(70 965)" filter="url(#shadow)">
+    <rect width="660" height="470" rx="26" fill="#16131f" stroke="#46385f"/>
+    <text x="28" y="43" class="panel-title">Obsidian 导入</text><text x="218" y="42" class="panel-sub">本地知识库与 Markdown 模板</text>
+    <text x="30" y="91" class="ui-title">Vault 路径</text><text x="30" y="113" class="ui-small">选择你的 Obsidian 仓库根目录</text>
+    <rect x="30" y="130" width="460" height="43" rx="10" fill="#211d29" stroke="#3d3548"/><text x="45" y="157" class="ui-text">D:\Manca仓库</text>
+    <rect x="503" y="130" width="65" height="43" rx="10" fill="#272131"/><text x="535" y="157" text-anchor="middle" class="ui-text">浏览</text>
+    <rect x="577" y="130" width="53" height="43" rx="10" fill="#6d46d9"/><text x="603" y="157" text-anchor="middle" fill="#fff" font-size="12">保存</text>
+    <rect x="30" y="198" width="190" height="238" rx="14" fill="#1c1824"/><text x="48" y="228" class="ui-title">模板</text>
+    <rect x="43" y="245" width="164" height="37" rx="9" fill="#302442"/><text x="58" y="269" class="ui-text">英文笔记</text>
+    <text x="58" y="310" class="ui-text">Default</text><text x="58" y="346" class="ui-text">新模板</text><text x="58" y="382" class="ui-text">新模板001</text><text x="58" y="418" class="ui-text">新模板002</text>
+    <rect x="239" y="198" width="391" height="238" rx="14" fill="#1c1824"/><text x="258" y="228" class="ui-title">模板详情</text><text x="258" y="251" class="ui-small">编辑保存路径和 Markdown 模板</text>
+    <text x="258" y="285" class="ui-small">名称</text><rect x="258" y="296" width="160" height="36" rx="8" fill="#272130"/><text x="272" y="319" class="ui-text">英文笔记</text>
+    <text x="437" y="285" class="ui-small">保存方式</text><rect x="437" y="296" width="171" height="36" rx="8" fill="#272130"/><text x="451" y="319" class="ui-text">追加到末尾</text>
+    <text x="258" y="356" class="ui-small">目标笔记</text><rect x="258" y="367" width="350" height="36" rx="8" fill="#272130"/><text x="272" y="390" class="ui-text">AI划词记录（单词）.md</text>
+    <text x="258" y="425" class="ui-small">## {{date}} {{time}} - {{skill_name}}</text>
+  </g>
+
+  <!-- Result card -->
+  <g class="sans" transform="translate(755 965)" filter="url(#shadow)">
+    <rect width="375" height="470" rx="26" fill="#17131f" stroke="#694e8b"/>
+    <text x="28" y="43" class="panel-title">划词结果卡片</text><text x="28" y="67" class="panel-sub">结果即刻呈现并支持一键沉淀</text>
+    <rect x="24" y="88" width="327" height="326" rx="18" fill="#211b2b"/>
+    <text x="43" y="117" class="ui-title">朗文翻译</text><text x="43" y="137" class="ui-small">deepseek-v4-flash</text>
+    <line x1="42" y1="151" x2="333" y2="151" stroke="#3f354c"/>
+    <text x="43" y="178" class="ui-small">原文</text><text x="43" y="204" fill="#fff" font-size="18" font-weight="700">Hello World</text>
+    <text x="43" y="243" fill="#ddd6fe" font-size="18" font-weight="700">你好，世界。</text>
+    <text x="43" y="277" class="ui-text">固定搭配 / 常用结构：</text>
+    <text x="43" y="303" class="ui-small">Hello World：常见于编程入门与技术示例，</text><text x="43" y="322" class="ui-small">也可作为简短问候语使用。</text>
+    <rect x="42" y="344" width="291" height="50" rx="10" fill="#2b2340"/><text x="56" y="366" class="ui-small">The first program most people write is</text><text x="56" y="383" class="ui-small">“Hello World.”</text>
+    <circle cx="53" cy="440" r="15" fill="#2c2636"/><circle cx="91" cy="440" r="15" fill="#2c2636"/><circle cx="129" cy="440" r="15" fill="#2c2636"/>
+    <rect x="184" y="421" width="167" height="38" rx="11" fill="url(#accent)"/><text x="267" y="446" text-anchor="middle" fill="#fff" font-size="13" font-weight="750">导入 Obsidian</text>
+  </g>
+
+  <!-- Footer -->
+  <g class="sans">
+    <text x="70" y="1500" class="panel-title">适用场景</text>
+    <g transform="translate(70 1522)">
+      <rect width="120" height="42" rx="21" fill="#2c2141"/><text x="60" y="27" text-anchor="middle" class="chip">翻译</text>
+      <rect x="132" width="135" height="42" rx="21" fill="#2c2141"/><text x="199" y="27" text-anchor="middle" class="chip">阅读理解</text>
+      <rect x="279" width="135" height="42" rx="21" fill="#2c2141"/><text x="346" y="27" text-anchor="middle" class="chip">搜索整理</text>
+      <rect x="426" width="150" height="42" rx="21" fill="#2c2141"/><text x="501" y="27" text-anchor="middle" class="chip">知识库沉淀</text>
+      <rect x="588" width="135" height="42" rx="21" fill="#2c2141"/><text x="655" y="27" text-anchor="middle" class="chip">写作辅助</text>
+      <rect x="735" width="135" height="42" rx="21" fill="#2c2141"/><text x="802" y="27" text-anchor="middle" class="chip">学习办公</text>
+    </g>
+    <text x="1130" y="1575" text-anchor="end" class="ui-small">© 2026 Bo Yan / Emllik414 · All Rights Reserved</text>
+  </g>
+</svg>
