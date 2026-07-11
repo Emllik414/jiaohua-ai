@@ -1,0 +1,69 @@
+饺滑-AI划词助手 专有软件许可协议
+JIAOHUA AI PROPRIETARY LICENSE
+版本 1.0（2026）
+
+Copyright © 2026 Bo Yan / Emllik414
+保留所有权利（All Rights Reserved）
+
+一、项目性质
+
+本仓库仅为提高透明度、方便个人评估、安全审查和学习参考而公开源代码。
+本软件不是开源软件，本协议不授予任何开源许可证，也不默示授予任何未明确列出的权利。
+
+二、官方安装包的有限个人使用许可
+
+个人用户可以下载、安装和使用版权所有者通过官方 GitHub Releases 发布的、未经修改的饺滑-AI划词助手安装包，但仅限个人、非商业用途。
+
+三、源代码查看权限
+
+用户可以查看或下载本仓库源代码，仅用于个人评估、安全审查和学习参考。
+该权限不允许将全部或部分源代码、产品设计或素材用于其他产品、服务、仓库、出版物或衍生作品。
+
+四、禁止行为
+
+未经版权所有者事先书面许可，不得实施下列行为：
+
+1. 修改、改编、翻译软件，或基于本软件创建衍生作品；
+2. 对软件进行反向工程、反编译或反汇编，但适用法律明确不得排除的情形除外；
+3. 将软件、源代码、界面、图标、截图、文档、品牌或其他素材用于任何商业、收费或营利用途；
+4. 复制并重新发布、分发、转售、转授权、出租、镜像、托管、捆绑、重新打包或二次发布本软件的全部或部分内容；
+5. 将本软件或其衍生版本作为付费或免费的在线服务、托管服务或集成服务向第三方提供；
+6. 删除、隐藏或修改任何版权、归属、商标或专有权声明；
+7. 未经书面许可使用“饺滑”“JiaoHua AI”及相关名称、标识，或使用可能造成混淆的近似品牌。
+
+五、第三方组件
+
+本项目使用的第三方库和组件继续受各自许可证约束。本协议不限制第三方许可证独立授予的权利。
+本协议适用于饺滑-AI划词助手的原创代码、产品设计、界面、文档、品牌、截图及其他专有材料。
+
+六、无担保
+
+本软件按“现状”提供，不作任何明示或默示担保，包括但不限于适销性、特定用途适用性和不侵权担保。
+在适用法律允许的最大范围内，版权所有者不对因本软件或其使用产生的任何索赔、损失或其他责任承担责任。
+
+七、许可终止
+
+违反本协议任何条款时，本协议授予的有限权限自动终止。权限终止后，使用者必须停止相关使用，并删除所有未经授权的副本和衍生材料。
+
+八、其他使用授权
+
+任何商业使用、修改、再分发、集成、二次开发或本协议未明确允许的其他用途，都必须事先取得版权所有者的单独书面授权。
+
+------------------------------------------------------------
+
+ENGLISH SUMMARY
+
+This repository is source-available, but it is NOT open-source software.
+Official, unmodified binary releases may be used only for personal,
+non-commercial purposes.
+
+Without prior written permission from the copyright holder, you may not
+modify, adapt, translate, create derivative works, use commercially,
+redistribute, republish, mirror, sublicense, sell, rent, host, bundle,
+repackage, or otherwise provide the software, source code, interface,
+branding, screenshots, documentation, or other proprietary materials to
+another party.
+
+Third-party components remain governed by their respective licenses.
+The software is provided “AS IS” without warranty, to the maximum extent
+permitted by applicable law.
