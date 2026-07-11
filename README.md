@@ -1,122 +1,88 @@
-﻿# 饺划-AI划词助手 (JiaoHua AI Selection Assistant)
+<div align="center">
 
-划词即用 AI 的工具 —— 选中文本即调用 AI 翻译、解释、总结。
+# 饺滑-AI划词助手
 
-## 项目结构
+**划词、对话、整理、导出，一站式桌面 AI 效率助手**
 
-```
-D:\项目管理\JiaoHua AI
-├── electron/
-│   ├── main.cjs                 # 主进程：IPC、LLM 调用、窗口管理、生命周期
-│   ├── preload.cjs              # 预加载脚本：IPC 桥接
-│   ├── selection-engine.cjs     # 取词引擎：Browser/UIA/Clipboard/OCR 候选池
-│   └── floating-layout.cjs      # 悬浮窗布局计算
-├── src/
-│   ├── App.tsx                  # 渲染进程：工具条、结果卡片、设置、历史
-│   └── toolbar/
-│       ├── Toolbar.tsx          # 工具条组件
-│       ├── ResultCardChrome.tsx # 结果卡片外壳
-│       └── toolbar.css          # 工具条样式
-├── browser-extension/
-│   ├── manifest.json            # Chrome 扩展清单
-│   ├── content.js               # 网页内容脚本：selection 捕获
-│   └── background.js            # Service Worker：心跳 + 自动重注入
-├── tools/
-│   └── uia-selection-provider.ps1  # UIA 取词 PowerShell 脚本
-├── scripts/
-│   ├── check-and-launch.ps1        # 启动检查脚本
-│   └── start-jiaohua-dev-hidden.vbs # 无窗口启动器
-├── assets/                         # 图标资源
-├── data/                           # 运行时数据（.gitignore）
-└── docs/
-    └── MIGRATION.md              # 用户数据迁移指南
-```
+[![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?logo=windows)](https://github.com/Emllik414/jiaohua-ai/releases)
+[![Beta](https://img.shields.io/badge/版本-v0.1.0%20Beta-8B5CF6)](https://github.com/Emllik414/jiaohua-ai/releases)
+[![Electron](https://img.shields.io/badge/Electron-桌面端-47848F?logo=electron)](https://www.electronjs.org/)
+[![License](https://img.shields.io/badge/许可-专有软件-red)](#版权与使用限制)
 
-## 启动方式
+[下载 Windows 测试版](https://github.com/Emllik414/jiaohua-ai/releases)
 
-### 开发启动（推荐）
+</div>
 
-双击桌面 `饺划-AI划词助手 开发启动器` 快捷方式，或：
+![饺滑-AI划词助手产品介绍与界面预览](docs/images/product-showcase.svg)
 
-```cmd
-cd /d "D:\项目管理\JiaoHua AI"
-npx electron .
-```
+## 产品介绍
 
-### 构建
+饺滑是一款面向翻译、阅读、搜索、写作和知识整理场景的 Windows 桌面划词助手。用户在网页或文档中选中文字后，即可快速调用翻译、搜索、辅助阅读、发音、复制等技能，并在独立结果卡片中查看和继续处理内容。
 
-```cmd
-npm run build
-```
+软件会自动保留每一次划词与对话，方便用户搜索、回看、展开、整理和删除历史记录。对话结果既可以直接导入 Obsidian，也支持导入本地文件，并可导出为 TXT、Markdown（MD）和 Word（DOCX）等常用格式，让零散信息持续沉淀为个人知识库。
 
-### 取词引擎测试
+饺滑支持自定义技能名称、图标、系统提示词和划词提示词。用户可以根据翻译、学习、写作、总结或办公需求建立自己的工作流，并按需配置兼容的 API 服务商和模型，无需被单一平台绑定。官方安装包不内置用户的真实 API Key，密钥由用户自行填写和管理。
 
-```cmd
-node selection_engine_fusion_tests.cjs
-```
+## 核心亮点
 
-## Git 历史
+| 功能 | 说明 |
+| --- | --- |
+| **划词即用** | 选中文字即可弹出工具条，快速执行 AI 技能或系统操作。 |
+| **历史记录自动保存** | 每一次划词和对话都会保留，支持搜索、回看、展开与删除。 |
+| **自定义技能与提示词** | 可自定义技能名称、图标、系统提示词和专属划词提示词。 |
+| **自由配置 API 服务商** | 可连接和切换兼容的 API 厂家与模型，适配不同任务和预算。 |
+| **Obsidian 与本地文件** | 支持导入 Obsidian、导入本地文件，并通过模板整理笔记。 |
+| **多格式导出** | 支持导出 TXT、MD、Word（DOCX）等格式。 |
+| **结果一键沉淀** | 结果卡片可直接复制、朗读、重新生成或导入 Obsidian。 |
+| **浏览器增强** | 配套 Edge / Chrome 扩展，提高网页、字幕和复杂页面的取词准确度。 |
 
-```
-d827855 fix extension metadata encoding and gitignore
-a9c28ba fix result card lifecycle and logging
-53a819a optimize selection capture
-78b4532 fix llm abort signal propagation
-a8e796b add user data migration after app rename
-c8ddab1 Initial commit: 饺划-AI划词助手 v0.1.0
-```
+## 界面预览
 
-## 近期修复（2026-07-07）
+产品介绍图展示了饺滑的主要使用界面：
 
-| 问题 | 修复 | 文件 |
-|------|------|------|
-| P0: LLM AbortController signal 未传递 | dispatchByApiType 关联外部 signal | main.cjs |
-| P1: 结果卡片 resize 高频触发 | 100ms throttle + rAF 单次 pending | App.tsx |
-| P1: manifest.json 中文乱码 | UTF-8 + short_name | manifest.json |
-| P1: data/ 配置未在 .gitignore 中 | 添加 provider/store/hotkey/release | .gitignore |
-| P2: 桌面取词慢 200ms | BrowserProvider 跳过非浏览器进程 | selection-engine.cjs |
-| P2: captureViaEngine 无超时 | 2000ms / 3000ms 超时保护 | main.cjs |
-| P2: overlayState 阻止新划词 | 新 selection 先 reset 旧状态再显示 | main.cjs, App.tsx |
-| Obsidian 导入失败 | vaultPath 应为目录路径（已在设置页修复） | — |
-| Obsidian 重复导入 | saveToObsidianNote 增加 savedToObsidian 检查 | main.cjs |
+- **历史对话**：集中保存和管理每一次划词与 AI 对话。
+- **技能管理**：创建技能，自定义系统提示词、划词提示词与图标。
+- **Obsidian 导入**：配置 Vault 路径、目标笔记和 Markdown 模板。
+- **划词结果卡片**：即时展示处理结果，并提供复制、朗读、重新生成和导入操作。
 
-## 已知问题
+## 安装与使用
 
-- Obsidian 划词偶尔不精准（候选池仲裁边界情况）
-- 无 electron-builder 打包配置（当前只有 frontend build）
-- 浏览器扩展需手动加载（Chrome → 扩展程序 → 加载已解压的扩展程序）
-- 无自动清理旧 Electron 进程机制（启动器只检测不杀进程）
+1. 前往 [Releases](https://github.com/Emllik414/jiaohua-ai/releases) 下载 `饺滑-AI划词助手 Setup 0.1.0.exe`。
+2. 安装并启动饺滑，在“API 设置”中填写自己的服务商配置和 API Key。
+3. 在 Edge 地址栏打开 `edge://extensions`，启用“开发人员模式”。
+4. 点击“加载解压缩的扩展”，选择软件安装目录中的 `resources/browser-extension`。
+5. 刷新普通网页，划选文字进行测试。
 
-## 数据迁移
+> 当前为 Beta 测试版本，安装包尚未进行代码签名，Windows 可能显示“未知发布者”。`edge://`、浏览器扩展商店等受保护页面无法运行普通扩展。
 
-见 `docs/MIGRATION.md`。
+## 数据与隐私
 
-## 浏览器扩展
+- 历史记录、技能配置和常用设置主要保存在用户本机。
+- API Key 由用户自行配置，官方发布包不应包含开发者或其他用户的真实密钥。
+- 使用第三方 API 时，所选文本会依照对应服务商的接口规则发送和处理，请自行阅读相关服务商的隐私政策。
 
-- 目录：`browser-extension/`
-- Chrome Web Store 上架前需修复 manifest.json 编码（已修）
-- content.js 支持：普通网页、YouTube 字幕、Trancy 双语字幕
-- 通信方式：POST `http://127.0.0.1:17321/selection`
+## 技术构成
 
-## 配置文件位置
+- Electron + React + TypeScript
+- 浏览器扩展：Manifest V3
+- 取词候选：Browser Provider、Windows UIA、Clipboard 等
+- 文档能力：TXT、Markdown、Word（DOCX）
+- 知识库：Obsidian 模板化导入
 
-```
-%APPDATA%\jiaohua-ai-selection-assistant\data\
-├── store.json            # 应用设置 + 技能 + 历史记录
-├── provider-config.json  # Provider + API Key（加密存储）
-└── hotkey-config.json    # 快捷键配置
-```
+## 版权与使用限制
 
-## 日志
+**本仓库是源代码可见项目，但不是开源项目。**
 
-- 启动日志：`D:\项目管理\JiaoHua AI\logs\launcher.log`
+Copyright © 2026 Bo Yan / Emllik414. All Rights Reserved.
 
-## 取词引擎架构
+未经版权所有者事先书面许可，禁止：
 
-```
-BrowserProvider (10)   ← 浏览器 content script HTTP payload
-WindowsUIAProvider (30) ← PowerShell UIA TextPattern
-OCRProvider (50)       ← 图片/视频 OCR
-ClipboardProvider (90) ← Ctrl+C 兜底，自适应等待 120-400ms
-ManualFallbackProvider (99) ← 词块选择卡片
-```
+- 修改、改编、翻译或创建衍生作品；
+- 商业使用、销售、出租、收费服务或其他营利用途；
+- 复制后重新发布、分发、转售、镜像、重新打包或二次发布；
+- 删除或更改版权、品牌及来源说明；
+- 将代码、界面、图标、截图或产品素材用于其他产品。
+
+官方发布的、未经修改的安装包仅允许个人非商业下载、安装和使用。完整条款见 [LICENSE](LICENSE)。
+
+> Obsidian、Microsoft Edge、Google Chrome 及其他第三方名称和商标归各自权利人所有。本项目与这些第三方不存在官方隶属或背书关系。
