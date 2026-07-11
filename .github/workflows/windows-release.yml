@@ -1,0 +1,81 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$packageVersion") {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version v$packageVersion"
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          Get-ChildItem -File -Filter '*tests.cjs' | ForEach-Object {
+            node --test $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build Windows installer
+        run: npm run dist:win
+
+      - name: Verify signature and write checksums
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem release -File -Filter '*.exe' |
+            Where-Object Name -NotLike '*uninstaller*'
+          if (-not $installers) { throw 'No Windows installer was produced.' }
+
+          $hasSigningSecret = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature $installer.FullName
+            if ($hasSigningSecret -and $signature.Status -ne 'Valid') {
+              throw "Signing was configured but $($installer.Name) is not validly signed: $($signature.Status)"
+            }
+          }
+
+          $installers | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content release/SHA256SUMS.txt
+
+      - name: Create draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $assets = @(
+            Get-ChildItem release -File |
+              Where-Object { $_.Extension -in '.exe', '.blockmap' -or $_.Name -eq 'SHA256SUMS.txt' } |
+              ForEach-Object FullName
+          )
+          if (-not $assets) { throw 'No release assets were produced.' }
+          gh release create $env:GITHUB_REF_NAME @assets `
+            --draft `
+            --prerelease `
+            --generate-notes `
+            --title "饺滑-AI划词助手 $env:GITHUB_REF_NAME"

@@ -1,0 +1,56 @@
+name: Windows build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - "codex/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          Get-ChildItem -File -Filter '*tests.cjs' | ForEach-Object {
+            node --test $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build Windows installer
+        run: npm run dist:win
+
+      - name: Write checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem release -File -Filter '*.exe' |
+            Where-Object Name -NotLike '*uninstaller*' |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content release/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jiaohua-ai-windows-${{ github.sha }}
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
