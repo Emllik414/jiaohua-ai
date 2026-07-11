@@ -11,6 +11,7 @@ public static class ClipboardHelper
     private const ushort VK_C = 0x43;
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const uint CF_UNICODETEXT = 13;
+    private const uint GMEM_MOVEABLE = 0x0002;
 
     private const int INITIAL_DELAY_MS = 25;
     private const int POLL_INTERVAL_MS = 10;
@@ -30,6 +31,18 @@ public static class ClipboardHelper
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr GetClipboardData(uint uFormat);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalFree(IntPtr hMem);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr GlobalLock(IntPtr hMem);
@@ -81,6 +94,8 @@ public static class ClipboardHelper
         bool changed = false;
         bool ok = false;
         bool inputOk = false;
+        bool restored = false;
+        string restoreSkippedReason = "";
         string inputMethod = "";
         uint sendInputSent = 0;
         int sendInputLastError = 0;
@@ -160,6 +175,19 @@ public static class ClipboardHelper
                 sequenceAfter = GetClipboardSequenceNumber();
             }
 
+            // Restore only while this capture still owns the clipboard. If another
+            // application/user copied something after our Ctrl+C, their content wins.
+            uint sequenceBeforeRestore = GetClipboardSequenceNumber();
+            if (changed && sequenceBeforeRestore == sequenceAfter)
+            {
+                restored = WriteClipboardTextSafe(previousText ?? "");
+                if (!restored) restoreSkippedReason = "restore_write_failed";
+            }
+            else if (changed)
+            {
+                restoreSkippedReason = "clipboard_changed_by_other_owner";
+            }
+
             double confidence = ok ? (text == previousText ? 0.75 : 0.85) : 0.0;
 
             var sb = new StringBuilder();
@@ -178,6 +206,8 @@ public static class ClipboardHelper
             Add(sb, "error", ok ? "" : error); sb.Append(",");
             Add(sb, "textLen", ok ? text.Length : 0); sb.Append(",");
             Add(sb, "previousTextLen", previousText == null ? 0 : previousText.Length); sb.Append(",");
+            Add(sb, "restored", restored); sb.Append(",");
+            Add(sb, "restoreSkippedReason", restoreSkippedReason); sb.Append(",");
             Add(sb, "inputOk", inputOk); sb.Append(",");
             Add(sb, "inputMethod", inputMethod); sb.Append(",");
             Add(sb, "sendInputSent", sendInputSent); sb.Append(",");
@@ -251,6 +281,40 @@ public static class ClipboardHelper
         }
 
         return "";
+    }
+
+    private static bool WriteClipboardTextSafe(string value)
+    {
+        byte[] bytes = Encoding.Unicode.GetBytes((value ?? "") + "\0");
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            if (!OpenClipboard(IntPtr.Zero))
+            {
+                Thread.Sleep(5);
+                continue;
+            }
+
+            IntPtr memory = IntPtr.Zero;
+            try
+            {
+                if (!EmptyClipboard()) return false;
+                memory = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes.Length);
+                if (memory == IntPtr.Zero) return false;
+                IntPtr target = GlobalLock(memory);
+                if (target == IntPtr.Zero) return false;
+                try { Marshal.Copy(bytes, 0, target, bytes.Length); }
+                finally { GlobalUnlock(memory); }
+                if (SetClipboardData(CF_UNICODETEXT, memory) == IntPtr.Zero) return false;
+                memory = IntPtr.Zero; // Clipboard now owns the allocation.
+                return true;
+            }
+            finally
+            {
+                if (memory != IntPtr.Zero) GlobalFree(memory);
+                CloseClipboard();
+            }
+        }
+        return false;
     }
 
     private static string ReadClipboardTextOnce()

@@ -44,6 +44,8 @@ type PronunciationData = {
   gb_ipa?: string
 }
 
+type AnswerFormat = 'rich' | 'plain' | 'json' | 'code' | 'template'
+
 type HistoryRecord = {
   id: string
   createdAt: string
@@ -52,9 +54,11 @@ type HistoryRecord = {
   selectedText: string
   skillId: string
   skillName: string
+  skillIconKey?: string
   providerId: string
   model: string
   answerMarkdown: string
+  answerFormat?: AnswerFormat
   status: 'running' | 'completed' | 'failed' | 'confirming'
   savedToObsidian: boolean
   obsidianPath: string
@@ -154,10 +158,13 @@ declare global {
       deleteObsidianTemplate: (templateId: string) => Promise<ObsidianTemplate[]>
       previewObsidianTemplate: (templateId: string, recordId: string, record?: HistoryRecord) => Promise<{ markdown: string; relativePath: string; behavior: string; templateName: string }>
       saveToObsidianNote: (templateId: string, recordId: string, record?: HistoryRecord) => Promise<{ ok: boolean; path: string; templateName: string }>
+      saveManyToObsidian: (templateId: string, recordIds: string[]) => Promise<{ ok: boolean; successCount: number; failureCount: number; results: Array<{ recordId: string; ok: boolean; path?: string; error?: string }> }>
       listVaultNotes: () => Promise<string[]>
       checkVaultPath: (relativePath: string) => Promise<{ exists: boolean }>
       deleteHistory: (recordIds: string[]) => Promise<InitialData>
       clearHistory: () => Promise<InitialData>
+      chooseHistoryExportDirectory: () => Promise<{ canceled: boolean; directory: string }>
+      exportHistory: (options: { recordIds: string[]; format: 'markdown' | 'word' | 'txt'; fileName: string; directory: string }) => Promise<{ ok: boolean; filePath: string; recordCount: number }>
       speak: (text: string, options?: { key?: string }) => Promise<{ ok: boolean; speaking?: boolean }>
       stopSpeak: () => Promise<{ ok: boolean; speaking?: boolean }>
       onTtsState: (callback: (payload: TtsStatePayload) => void) => () => void
@@ -559,6 +566,18 @@ function tabSubtitle(tab: string) {
   // ─── 选择模式 ───
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'markdown' | 'word' | 'txt'>('markdown')
+  const [exportFileName, setExportFileName] = useState('JiaoHua AI 历史记录')
+  const [exportDirectory, setExportDirectory] = useState('')
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
+  const obsidianButtonRef = useRef<HTMLButtonElement>(null)
+  const templateMenuRef = useRef<HTMLDivElement>(null)
+  const templateOptionsRef = useRef<HTMLDivElement>(null)
+  const [templateCanScrollDown, setTemplateCanScrollDown] = useState(false)
+  const operationConversationRef = useRef(activeConversationId)
 
   const activeConv = conversations.find((c) => c.id === activeConversationId)
   const convRecords = useMemo(() => {
@@ -591,18 +610,73 @@ function tabSubtitle(tab: string) {
   }, [filteredConvs])
 
   const enterSelectMode = () => { setSelectMode(true); setSelectedIds(new Set()) }
-  const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()) }
+  const exitSelectMode = () => {
+    setSelectMode(false)
+    setSelectedIds(new Set())
+    setTplOpen(false)
+    setExportOpen(false)
+  }
 
   // ─── 模板选择器 ───
   const [tplOpen, setTplOpen] = useState(false)
-  const [localActiveTplId, setLocalActiveTplId] = useState(activeTemplateId)
-  const activeTpl = templates.find((t) => t.id === localActiveTplId) || templates[0]
-  const switchTemplate = async (tplId: string) => {
-    setLocalActiveTplId(tplId)
+
+  useEffect(() => {
+    operationConversationRef.current = activeConversationId
+    setSelectMode(false)
+    setSelectedIds(new Set())
     setTplOpen(false)
-    const data = await window.desktopApi.getInitialData()
-    await window.desktopApi.saveSettings({ ...data.settings, obsidian: { ...data.settings.obsidian, activeTemplateId: tplId } })
-  }
+    setExportOpen(false)
+    setMessage('')
+    setIsDeleting(false)
+    setIsExporting(false)
+    setIsImporting(false)
+  }, [activeConversationId])
+
+  useEffect(() => {
+    const validIds = new Set(convRecords.map((record) => record.id))
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => validIds.has(id)))
+      return next.size === current.size ? current : next
+    })
+  }, [convRecords])
+
+  useEffect(() => {
+    if (selectedIds.size === 0) setTplOpen(false)
+  }, [selectedIds.size])
+
+  useEffect(() => {
+    if (!tplOpen) return
+    const closeOnPointer = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (!templateMenuRef.current?.contains(target) && !obsidianButtonRef.current?.contains(target)) setTplOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setTplOpen(false) }
+    window.addEventListener('mousedown', closeOnPointer)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('mousedown', closeOnPointer)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [tplOpen])
+
+  useEffect(() => {
+    if (!tplOpen) {
+      setTemplateCanScrollDown(false)
+      return
+    }
+    const element = templateOptionsRef.current
+    if (!element) return
+    const update = () => setTemplateCanScrollDown(element.scrollHeight - element.scrollTop - element.clientHeight > 8)
+    const frame = requestAnimationFrame(update)
+    element.addEventListener('scroll', update)
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => {
+      cancelAnimationFrame(frame)
+      element.removeEventListener('scroll', update)
+      observer.disconnect()
+    }
+  }, [tplOpen, templates.length])
 
   const toggleSelectId = (id: string) => {
     setSelectedIds((prev) => {
@@ -616,21 +690,67 @@ function tabSubtitle(tab: string) {
   const selectAll = () => { setSelectedIds(new Set(convRecords.map((r) => r.id))) }
   const deselectAll = () => { setSelectedIds(new Set()) }
 
-  const selectedRecords = useMemo(() => convRecords.filter((r) => selectedIds.has(r.id)), [convRecords, selectedIds])
-
-  const importToObsidian = async (records: HistoryRecord[]) => {
-    if (records.length === 0) { setMessage('没有可导入的记录'); return }
-    let ok = 0, fail = 0
-    for (const r of records) {
-      try { await saveRecordToActiveObsidian(r); ok++ }
-      catch { fail++ }
+  const importSelectedToObsidian = async (templateId: string) => {
+    if (selectedIds.size === 0 || isImporting) return
+    const operationConversationId = activeConversationId
+    setTplOpen(false)
+    setIsImporting(true)
+    setMessage('')
+    try {
+      const result = await window.desktopApi.saveManyToObsidian(templateId, [...selectedIds])
+      if (operationConversationRef.current !== operationConversationId) return
+      setMessage(`已导入 ${result.successCount} 条${result.failureCount > 0 ? `，${result.failureCount} 条失败或已导入` : ''}`)
+      onRefresh()
+    } catch (error) {
+      if (operationConversationRef.current !== operationConversationId) return
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (operationConversationRef.current === operationConversationId) setIsImporting(false)
     }
-    setMessage(`已导入 ${ok} 条${fail > 0 ? `，${fail} 条失败` : ''}`)
+  }
+  const deleteSingle = async (id: string) => { await window.desktopApi.deleteHistory([id]); onRefresh() }
+  const deleteSelected = async () => {
+    if (!selectedIds.size || isDeleting) return
+    if (!confirm('确定删除选中的 ' + selectedIds.size + ' 条记录吗？')) return
+    const operationConversationId = activeConversationId
+    setIsDeleting(true)
+    setMessage('')
+    try {
+      await window.desktopApi.deleteHistory([...selectedIds])
+      if (operationConversationRef.current !== operationConversationId) return
+      setSelectedIds(new Set())
+      onRefresh()
+    } catch (error) {
+      if (operationConversationRef.current !== operationConversationId) return
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (operationConversationRef.current === operationConversationId) setIsDeleting(false)
+    }
   }
 
-  const importSelectedToObsidian = () => importToObsidian(selectedRecords)
-  const deleteSingle = async (id: string) => { await window.desktopApi.deleteHistory([id]); onRefresh() }
-  const deleteSelected = async () => { if (selectedIds.size) { await window.desktopApi.deleteHistory([...selectedIds]); onRefresh() } }
+  const chooseExportDirectory = async () => {
+    const result = await window.desktopApi.chooseHistoryExportDirectory()
+    if (!result.canceled) setExportDirectory(result.directory)
+  }
+
+  const confirmExport = async () => {
+    if (!exportDirectory) { setMessage('请先选择导出文件夹'); return }
+    if (!exportFileName.trim()) { setMessage('请输入导出文件名'); return }
+    const operationConversationId = activeConversationId
+    setIsExporting(true)
+    setMessage('')
+    try {
+      const result = await window.desktopApi.exportHistory({ recordIds: [...selectedIds], format: exportFormat, fileName: exportFileName, directory: exportDirectory })
+      if (operationConversationRef.current !== operationConversationId) return
+      setExportOpen(false)
+      setMessage(`已导出 ${result.recordCount} 条记录：${result.filePath}`)
+    } catch (error) {
+      if (operationConversationRef.current !== operationConversationId) return
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (operationConversationRef.current === operationConversationId) setIsExporting(false)
+    }
+  }
 
   // ─── 全部展开/收起 ───
   const allExpanded = convRecords.length > 0 && convRecords.every((r) => expandedIds.has(r.id))
@@ -708,38 +828,54 @@ function tabSubtitle(tab: string) {
               <h2>{activeConv?.title || '对话式历史'}</h2>
               <p>{convRecords.length} 条记录</p>
             </div>
-            {!selectMode ? (
-              <div className="history-actions">
-                <button className="btn" onClick={toggleAllExpanded}>{allExpanded ? '全部收起' : '全部展开'}</button>
-                <button className="btn primary" onClick={enterSelectMode}>选择</button>
-              </div>
-            ) : (
-              <div className="selection-toolbar">
-                <span className="select-pill">已选择 {selectedIds.size} 条</span>
-                <button className="btn" onClick={allSelected ? deselectAll : selectAll}>{allSelected ? '取消全选' : '全选'}</button>
-                <div className="grow" />
-                {activeTpl ? (
-                  <div className="tpl-selector">
-                    <button className="tpl-chip" onClick={() => setTplOpen(!tplOpen)}>
-                      <span className="tpl-label">模板</span>
-                      <span className="tpl-name">{activeTpl.name}</span>
-                      <span className={'tpl-arrow' + (tplOpen ? ' open' : '')}>▾</span>
-                    </button>
-                    {tplOpen ? (
-                      <div className="tpl-dropdown">
-                        {templates.map((t) => (
-                          <button key={t.id} className={'tpl-item' + (t.id === activeTpl.id ? ' active' : '')} onClick={() => switchTemplate(t.id)}>{t.id === activeTpl.id ? '✓ ' : ''}{t.name}</button>
+            <div className="history-batch-actions">
+              <button className={'btn' + (selectMode ? ' active' : '')} onClick={selectMode ? exitSelectMode : enterSelectMode}>{selectMode ? '完成选择' : '选择'}</button>
+              <button className="btn danger" onClick={() => void deleteSelected()} disabled={selectedIds.size === 0 || isDeleting}>{isDeleting ? '删除中…' : '删除'}</button>
+              <button className="btn" onClick={toggleAllExpanded}>{allExpanded ? '全部折叠' : '全部展开'}</button>
+              <button className="btn export-action" onClick={() => setExportOpen(true)} disabled={selectedIds.size === 0 || isExporting}>导出</button>
+              <div className="history-obsidian-action">
+                <button ref={obsidianButtonRef} className="btn purple" onClick={() => setTplOpen((open) => !open)} disabled={selectedIds.size === 0 || isImporting || templates.length === 0}>{isImporting ? '导入中…' : '导入 Obsidian'}</button>
+                {tplOpen ? (
+                  <div className="history-template-popover" ref={templateMenuRef} role="menu">
+                    <div className="history-template-popover-head">
+                      <strong>选择导入模板</strong>
+                      <span>选择后立即导入所选记录</span>
+                    </div>
+                    <div className="history-template-scroll-shell">
+                      <div className="history-template-options" ref={templateOptionsRef}>
+                        {templates.map((template) => (
+                          <button key={template.id} className={template.id === activeTemplateId ? 'active' : ''} onClick={() => void importSelectedToObsidian(template.id)} role="menuitem">
+                            <span className="history-template-dot" />
+                            <span className="history-template-option-main">
+                              <strong>{template.name}</strong>
+                              <small>{template.id === activeTemplateId ? '默认模板' : 'Obsidian 模板'}</small>
+                            </span>
+                            {template.id === activeTemplateId ? <span className="history-template-check">✓</span> : null}
+                          </button>
                         ))}
                       </div>
-                    ) : null}
+                      <button
+                        className={'history-template-scroll-hint' + (templateCanScrollDown ? ' show' : '')}
+                        aria-label="滚动查看更多模板"
+                        tabIndex={templateCanScrollDown ? 0 : -1}
+                        onClick={() => templateOptionsRef.current?.scrollTo({ top: templateOptionsRef.current.scrollHeight, behavior: 'smooth' })}
+                      ><span aria-hidden="true">↓</span></button>
+                    </div>
                   </div>
                 ) : null}
-                <button className="btn purple" onClick={importSelectedToObsidian} disabled={selectedIds.size === 0}>导入 Obsidian</button>
-                <button className="btn danger" onClick={() => { if (confirm('确定删除选中的 ' + selectedIds.size + ' 条记录吗？')) { deleteSelected(); exitSelectMode() } }} disabled={selectedIds.size === 0}>删除</button>
-                <button className="btn" onClick={exitSelectMode}>完成</button>
               </div>
-            )}
+            </div>
           </div>
+
+          {selectMode ? (
+            <div className="history-selection-bar">
+              <span>已选择 <b>{selectedIds.size}</b> 条记录</span>
+              <div>
+                <button onClick={selectAll} disabled={allSelected}>全选</button>
+                <button onClick={deselectAll} disabled={selectedIds.size === 0}>清空选择</button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="records-search">
             <input className="search" placeholder="搜索当前对话..." value={filter} onChange={(e) => setFilter(e.target.value)} />
@@ -766,6 +902,70 @@ function tabSubtitle(tab: string) {
           </div>
         </section>
       </div>
+      {exportOpen ? (
+        <HistoryExportDrawer
+          count={selectedIds.size}
+          format={exportFormat}
+          fileName={exportFileName}
+          directory={exportDirectory}
+          busy={isExporting}
+          onFormat={setExportFormat}
+          onFileName={setExportFileName}
+          onChooseDirectory={() => void chooseExportDirectory()}
+          onClose={() => { if (!isExporting) setExportOpen(false) }}
+          onConfirm={() => void confirmExport()}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function HistoryExportDrawer({ count, format, fileName, directory, busy, onFormat, onFileName, onChooseDirectory, onClose, onConfirm }: {
+  count: number
+  format: 'markdown' | 'word' | 'txt'
+  fileName: string
+  directory: string
+  busy: boolean
+  onFormat: (format: 'markdown' | 'word' | 'txt') => void
+  onFileName: (value: string) => void
+  onChooseDirectory: () => void
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const formats: Array<{ id: 'markdown' | 'word' | 'txt'; name: string; extension: string; description: string }> = [
+    { id: 'markdown', name: 'Markdown', extension: '.md', description: '保留清晰的标题层级' },
+    { id: 'word', name: 'Word', extension: '.docx', description: '可在 Office 中继续编辑' },
+    { id: 'txt', name: 'TXT', extension: '.txt', description: '轻量纯文本' },
+  ]
+  return (
+    <div className="history-export-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <aside className="history-export-drawer" role="dialog" aria-modal="true" aria-label="导出文档">
+        <header>
+          <div><h2>导出文档</h2><p>导出主界面已勾选的 {count} 条历史记录</p></div>
+          <button className="history-export-close" onClick={onClose} disabled={busy} aria-label="关闭">×</button>
+        </header>
+        <div className="history-export-body">
+          <section>
+            <label>文件格式</label>
+            <div className="history-export-formats">
+              {formats.map((item) => (
+                <button key={item.id} className={format === item.id ? 'active' : ''} onClick={() => onFormat(item.id)}>
+                  <strong>{item.name}</strong><span>{item.extension}</span><small>{item.description}</small>
+                </button>
+              ))}
+            </div>
+          </section>
+          <section>
+            <label htmlFor="history-export-name">文件名称</label>
+            <div className="history-export-name"><input id="history-export-name" value={fileName} onChange={(event) => onFileName(event.target.value)} /><span>{formats.find((item) => item.id === format)?.extension}</span></div>
+          </section>
+          <section>
+            <label>本地保存文件夹</label>
+            <div className="history-export-directory"><span title={directory}>{directory || '尚未选择文件夹'}</span><button onClick={onChooseDirectory}>选择文件夹</button></div>
+          </section>
+        </div>
+        <footer><span>导出 {count} 条记录</span><button className="primary" onClick={onConfirm} disabled={busy || count === 0}>{busy ? '正在导出…' : '导出到本地'}</button></footer>
+      </aside>
     </div>
   )
 }
@@ -884,11 +1084,11 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
             <div className="record-source-text">{item.selectedText}</div>
           </div>
           {item.pronunciationData ? (
-            <PronunciationCard data={item.pronunciationData} answer={item.answerMarkdown} status={item.status} />
+            <PronunciationCard data={item.pronunciationData} answer={item.answerMarkdown} answerFormat={item.answerFormat} status={item.status} />
           ) : (
             <div className="record-answer">
               <div className="record-answer-label">AI 回答</div>
-              {item.answerMarkdown ? <MarkdownView text={item.answerMarkdown} /> : isRunning ? <TypingDots /> : null}
+              {item.answerMarkdown ? <AnswerView text={item.answerMarkdown} format={item.answerFormat} variant="history" streaming={isRunning} /> : isRunning ? <TypingDots /> : null}
             </div>
           )}
           <div className="record-actions">
@@ -933,6 +1133,7 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
 
   const preset = presets[selectedId]
   const pcfg = config.providers[selectedId]
+  const supportsStreaming = preset.apiType === 'openai-compatible-chat'
   const availableModels = [...new Set([...(preset?.models || []), ...(pcfg?.customModels || [])])]
 
   const save = async (updates: Record<string, Partial<ProviderUserConfig>>) => {
@@ -1050,12 +1251,15 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
               </div>
             </div>
 
-            <div className="form-row">
-              <label className="inline-label">
-                <input type="checkbox" checked={pcfg?.stream !== false} onChange={(e) => save({ [selectedId]: { stream: e.target.checked } })} />
-                <span>流式输出</span>
-              </label>
-            </div>
+            {supportsStreaming ? (
+              <div className="form-row">
+                <label className="inline-label">
+                  <input type="checkbox" checked={pcfg?.stream !== false} onChange={(e) => save({ [selectedId]: { stream: e.target.checked } })} />
+                  <span>流式输出</span>
+                </label>
+                <div className="form-row-hint">开启后回答会边生成边显示；关闭后等待完整回答再一次显示。</div>
+              </div>
+            ) : null}
 
             <button className="api-advanced-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
               {showAdvanced ? '▲ 收起高级设置' : '▼ 高级设置'}
@@ -2111,6 +2315,16 @@ function ResultView() {
     })
   }, [])
 
+  useEffect(() => window.desktopApi.onSkillsUpdated((payload) => {
+    setRecord((current) => {
+      if (!current) return current
+      const skill = payload.allSkills.find((item) => item.id === current.skillId)
+      if (!skill) return current
+      const nextIconKey = normalizeIconKey(skill.iconKey)
+      return current.skillIconKey === nextIconKey ? current : { ...current, skillIconKey: nextIconKey }
+    })
+  }), [])
+
   useEffect(() => {
     const offReady = window.desktopApi.onResultReady((next) => {
       stopStreamPump()
@@ -2276,6 +2490,7 @@ function ResultView() {
       <ResultCardChrome
         cardRef={resultCardRef}
         title={`${record.skillName}`}
+        skillIconKey={normalizeIconKey(record.skillIconKey)}
         subtitle={record.model}
         status={record.status}
         sourceExpanded={sourceExpanded}
@@ -2340,8 +2555,8 @@ function ResultView() {
           </section>
         ) : (
         <section className={record.status === 'failed' ? 'answer-box failed' : 'answer-box'}>
-          {record.pronunciationData ? <PronunciationCard data={record.pronunciationData} answer={record.answerMarkdown} status={record.status} /> : null}
-          {!record.pronunciationData && record.answerMarkdown ? (record.status === 'running' ? <StreamingText text={record.answerMarkdown} /> : <MarkdownView text={record.answerMarkdown} />) : null}
+          {record.pronunciationData ? <PronunciationCard data={record.pronunciationData} answer={record.answerMarkdown} answerFormat={record.answerFormat} status={record.status} /> : null}
+          {!record.pronunciationData && record.answerMarkdown ? <AnswerView text={record.answerMarkdown} format={record.answerFormat} variant="result" streaming={record.status === 'running'} /> : null}
           {!record.pronunciationData && !record.answerMarkdown ? <TypingDots /> : null}
         </section>
         )}
@@ -2352,14 +2567,17 @@ function ResultView() {
 
 /* ───── 发音卡片 ───── */
 
-function PronunciationCard({ data, answer, status }: { data: PronunciationData; answer: string; status: string }) {
+function PronunciationCard({ data, answer, answerFormat, status }: { data: PronunciationData; answer: string; answerFormat?: AnswerFormat; status: string }) {
   const [speakingLang, setSpeakingLang] = useState<'' | 'en-US' | 'en-GB'>('')
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
   useEffect(() => {
     return () => {
       if ('speechSynthesis' in window) window.speechSynthesis.cancel()
     }
   }, [])
+
+  useEffect(() => setDetailsOpen(false), [data.text])
 
   const handlePlay = (e: React.MouseEvent, lang: 'en-US' | 'en-GB') => {
     e.preventDefault()
@@ -2407,7 +2625,18 @@ function PronunciationCard({ data, answer, status }: { data: PronunciationData; 
           </div>
         </>
       )}
-      {answer ? (isRunning ? <StreamingText text={answer} /> : <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown></div>) : null}
+      {answer ? (
+        isRunning ? <AnswerView text={answer} format={answerFormat} variant="pronunciation" streaming /> : (
+          <div className={'pronunciation-details' + (detailsOpen ? ' expanded' : '')}>
+            <div className="pronunciation-details-content">
+              <AnswerView text={answer} format={answerFormat} variant="pronunciation" />
+            </div>
+            <button className="pronunciation-details-toggle" onClick={(event) => { event.stopPropagation(); setDetailsOpen((value) => !value) }}>
+              {detailsOpen ? '收起详细解析' : '查看详细解析'} <span aria-hidden="true">⌄</span>
+            </button>
+          </div>
+        )
+      ) : null}
       {isRunning && !answer ? <TypingDots /> : null}
     </div>
   )
@@ -2491,6 +2720,9 @@ function TypingDots() {
 
 function normalizeMarkdownText(text: string) {
   return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{4,}/g, '\n\n\n')
     .replace(/\\\*\\\*/g, '**')
     .replace(/＊＊/g, '**')
 }
@@ -2503,8 +2735,17 @@ const resultMarkdownComponents: Components = {
   ),
 }
 
-function MarkdownView({ text }: { text: string }) {
-  return <div className="markdown-body result-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>{normalizeMarkdownText(text)}</ReactMarkdown></div>
+function MarkdownView({ text, variant = 'result' }: { text: string; variant?: 'result' | 'history' | 'pronunciation' }) {
+  return <div className={`markdown-body result-markdown answer-view answer-view--${variant}`}><ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>{normalizeMarkdownText(text)}</ReactMarkdown></div>
+}
+
+function AnswerView({ text, format = 'rich', variant = 'result', streaming = false }: { text: string; format?: AnswerFormat; variant?: 'result' | 'history' | 'pronunciation'; streaming?: boolean }) {
+  if (format !== 'rich') {
+    const normalized = String(text || '').replace(/\r\n?/g, '\n')
+    const codeLike = format === 'json' || format === 'code'
+    return <pre className={`answer-view answer-view--${variant} answer-plain${codeLike ? ' answer-code' : ''}`}>{normalized}{streaming ? <span className="streaming-caret" aria-hidden="true" /> : null}</pre>
+  }
+  return streaming ? <StreamingText text={text} variant={variant} /> : <MarkdownView text={text} variant={variant} />
 }
 
 function countUnescapedMarkers(text: string, marker: string) {
@@ -2547,9 +2788,9 @@ function makeStreamingMarkdownSafe(text: string) {
   return markdown
 }
 
-function StreamingText({ text }: { text: string }) {
+function StreamingText({ text, variant = 'result' }: { text: string; variant?: 'result' | 'history' | 'pronunciation' }) {
   return (
-    <div className="markdown-body result-markdown streaming-markdown">
+    <div className={`markdown-body result-markdown streaming-markdown answer-view answer-view--${variant}`}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>{makeStreamingMarkdownSafe(text)}</ReactMarkdown>
       <span className="streaming-caret" aria-hidden="true" />
     </div>

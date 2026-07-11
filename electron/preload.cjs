@@ -23,11 +23,14 @@ contextBridge.exposeInMainWorld('desktopApi', {
   deleteObsidianTemplate: (templateId) => ipcRenderer.invoke('obsidian:templates:delete', templateId),
   previewObsidianTemplate: (templateId, recordId, record) => ipcRenderer.invoke('obsidian:template:preview', { templateId, recordId, record }),
   saveToObsidianNote: (templateId, recordId, record) => ipcRenderer.invoke('obsidian:note:save', { templateId, recordId, record }),
+  saveManyToObsidian: (templateId, recordIds) => ipcRenderer.invoke('obsidian:notes:save-many', { templateId, recordIds }),
   listVaultNotes: () => ipcRenderer.invoke('obsidian:vault:list-notes'),
   checkVaultPath: (relativePath) => ipcRenderer.invoke('obsidian:vault:check-path', relativePath),
 
   deleteHistory: (recordIds) => ipcRenderer.invoke('history:delete', recordIds),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
+  chooseHistoryExportDirectory: () => ipcRenderer.invoke('history-export:choose-directory'),
+  exportHistory: (options) => ipcRenderer.invoke('history-export:write', options),
   speak: (text, options) => ipcRenderer.invoke('tts:speak', text, options),
   stopSpeak: () => ipcRenderer.invoke('tts:stop'),
   onTtsState: (callback) => {
