@@ -1,4 +1,4 @@
-name: Publish Beta Draft Release
+name: Publish Beta Release
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   actions: read
 
 jobs:
-  publish-draft:
+  publish-release:
     runs-on: ubuntu-latest
     env:
       TAG: v0.1.0-beta.1
@@ -78,7 +78,7 @@ jobs:
           - API Key 由用户自行配置，请勿公开分享真实密钥。
           EOF
 
-      - name: Create or update draft prerelease
+      - name: Create or publish prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -90,17 +90,21 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "$RELEASE_NAME" \
               --notes-file release-notes.md \
-              --draft \
               --prerelease
+
             gh release upload "$TAG" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
+
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft=false \
+              --prerelease
           else
             gh release create "$TAG" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_COMMIT" \
               --title "$RELEASE_NAME" \
               --notes-file release-notes.md \
-              --draft \
               --prerelease
           fi
