@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, ipcMain, screen, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, ipcMain, screen, nativeImage, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -407,6 +407,22 @@ function dataDir() {
   return dir;
 }
 
+function appearanceConfigPath() {
+  return path.join(dataDir(), 'appearance-config.json');
+}
+
+function readAppearanceMode() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(appearanceConfigPath(), 'utf8'));
+    if (['light', 'dark', 'system'].includes(parsed.mode)) return parsed.mode;
+  } catch (_) {}
+  return 'system';
+}
+
+function writeAppearanceMode(mode) {
+  fs.writeFileSync(appearanceConfigPath(), JSON.stringify({ mode }, null, 2), 'utf8');
+}
+
 // Auto-migration: ai-selection-desktop -> jiaohua-ai-selection-assistant
 function migrateUserDataIfNeeded() {
   try {
@@ -585,8 +601,8 @@ function createMainWindow() {
     height: 760,
     minWidth: 920,
     minHeight: 620,
-    title: '饺划',
-    icon: path.join(__dirname, '..', 'src', 'assets', 'icon.ico'),
+    title: '饺滑',
+    icon: path.join(__dirname, '..', 'src', 'assets', 'jiao_hua_app_icon_fullset.ico'),
     backgroundColor: '#f5f7fb',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -783,9 +799,9 @@ function createResultWindow() {
 }
 
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'src', 'assets', 'icon.png'));
+  const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'src', 'assets', 'jiao_hua_icon_256x256.png'));
   tray = new Tray(icon);
-  tray.setToolTip('JiaoHua AI Selection Assistant');
+  tray.setToolTip('饺滑-AI划词助手');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开主窗口', click: () => showMain() },
     { label: '自动划词已开启', enabled: false },
@@ -1071,7 +1087,7 @@ function pumpResultResize() {
     const margin = 12;
     let nextHeight = targetHeight;
     if (targetHeight > curH) {
-      nextHeight = Math.min(curH + 48, targetHeight);
+      nextHeight = Math.min(curH + 6, targetHeight);
     } else {
       if (curH - targetHeight < 32) { pendingResultTargetHeight = null; return; }
       nextHeight = targetHeight;
@@ -2563,6 +2579,16 @@ ipcMain.handle('app:get-initial-data', () => ({
   toolbarSkills: getToolbarSkills(),
 }));
 
+ipcMain.handle('appearance:set', (_event, mode) => {
+  const normalized = ['light', 'dark', 'system'].includes(mode) ? mode : 'system';
+  nativeTheme.themeSource = normalized;
+  writeAppearanceMode(normalized);
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('appearance:changed', normalized);
+  }
+  return { ok: true, mode: normalized };
+});
+
 // ─── Hotkey config IPC ───
 ipcMain.handle('hotkey:get-config', () => readHotkeyConfig());
 
@@ -3181,11 +3207,14 @@ function startBrowserReceiver() {
   });
 }
 
-app.setName('饺划-AI划词助手');
+app.setName('饺滑-AI划词助手');
 app.setAppUserModelId('com.jiaohua.selection.assistant');
 
 app.whenReady().then(() => {
   migrateUserDataIfNeeded();
+  // Restore the native theme before constructing any BrowserWindow so the
+  // Windows title bar and frame use the same appearance on the first paint.
+  nativeTheme.themeSource = readAppearanceMode();
   Menu.setApplicationMenu(null);
   createMainWindow();
   // Toolbar windows are intentionally created only when a real selection occurs.

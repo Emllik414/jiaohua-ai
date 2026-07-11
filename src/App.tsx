@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { motion } from 'motion/react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Toolbar } from './toolbar/Toolbar'
 import { MoreMenu } from './toolbar/MoreMenu'
 import { ResultCardChrome } from './toolbar/ResultCardChrome'
 import { buildMoreMenuSkills, buildToolbarActions } from './toolbar/actionRegistry'
 import { SkillIcon, SKILL_ICON_KEYS } from './components/SkillIcon'
+import brandLogo from './assets/jiao_hua_icon_128x128.png'
 import './App.css'
 
 // ─── types ───
@@ -163,6 +164,8 @@ declare global {
       showMain: () => Promise<{ ok: boolean }>
       closeCurrent: () => Promise<{ ok: boolean }>
       rendererLog?: (message: string) => void
+      setAppearance: (mode: AppearanceMode) => Promise<unknown>
+      onAppearanceChanged: (callback: (mode: AppearanceMode) => void) => () => void
       hideToolbar: () => Promise<{ ok: boolean }>
       resizeToolbar: (expanded: boolean) => Promise<{ ok: boolean }>
       toggleToolbarMore: () => Promise<{ ok: boolean; open: boolean }>
@@ -215,7 +218,7 @@ const emptySkill: Skill = {
   iconKey: 'spark',
   enabled: true,
   showInToolbar: true,
-  systemPrompt: '你是 饺划-AI划词助手，请用中文回答。',
+  systemPrompt: '你是 饺滑-AI划词助手，请用中文回答。',
   userPrompt: '请处理下面划词内容：\n\n{{selection}}',
   outputMode: 'popup',
   sortOrder: 100,
@@ -274,12 +277,22 @@ function useAppearanceBootstrap() {
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     const sync = () => applyAppearance(getStoredAppearance(), media.matches)
+    const syncFromMain = (mode: AppearanceMode) => {
+      localStorage.setItem(APPEARANCE_STORAGE_KEY, mode)
+      applyAppearance(mode, media.matches)
+    }
     sync()
+    // Migrate the renderer-only preference used by older versions into the
+    // main process so future BrowserWindows have the right native frame from
+    // their first paint.
+    void window.desktopApi.setAppearance(getStoredAppearance())
     media.addEventListener('change', sync)
     window.addEventListener('storage', sync)
+    const unsubscribe = window.desktopApi.onAppearanceChanged(syncFromMain)
     return () => {
       media.removeEventListener('change', sync)
       window.removeEventListener('storage', sync)
+      unsubscribe()
     }
   }, [])
 }
@@ -294,7 +307,7 @@ function MainView() {
     return window.desktopApi.onHistoryChanged((history) => setData((current) => current ? { ...current, history } : current))
   }, [])
 
-  if (!data) return <div className="loading">正在启动 饺划-AI划词助手...</div>
+  if (!data) return <div className="loading">正在启动 饺滑-AI划词助手...</div>
 
   const saveSettings = async (settings: Settings) => {
     const next = await window.desktopApi.saveSettings(settings)
@@ -326,9 +339,9 @@ function MainView() {
       <div className="main-glass-window">
         <aside className="sidebar">
           <div className="brand">
-            <div className="brand-icon"><SkillIcon iconKey="spark" /></div>
+            <div className="brand-icon"><img src={brandLogo} alt="饺滑" /></div>
             <div>
-              <div className="brand-title">饺划-AI划词助手</div>
+              <div className="brand-title">饺滑-AI划词助手</div>
               <div className="brand-sub">Selection Copilot</div>
             </div>
           </div>
@@ -408,6 +421,8 @@ function AppearanceControl() {
 
   const choose = (next: AppearanceMode) => {
     localStorage.setItem(APPEARANCE_STORAGE_KEY, next)
+    applyAppearance(next)
+    void window.desktopApi.setAppearance(next)
     setMode(next)
     setOpen(false)
   }
@@ -1994,17 +2009,8 @@ function ToolbarMoreView() {
   )
 }
 
-const STREAM_RENDER_INTERVAL_MS = 32
-
-function getStreamBatchSize(backlog: number) {
-  if (backlog > 320) return 40
-  if (backlog > 160) return 24
-  if (backlog > 80) return 14
-  if (backlog > 32) return 8
-  return 4
-}
-
 function ResultView() {
+  const STREAM_CHARACTER_INTERVAL_MS = 28
   const [record, setRecord] = useState<HistoryRecord | null>(null)
   const [sourceExpanded, setSourceExpanded] = useState(false)
   const [footerMoreOpen, setFooterMoreOpen] = useState(false)
@@ -2018,13 +2024,24 @@ function ResultView() {
   const resultCardRef = useRef<HTMLDivElement>(null)
   const resultDragRef = useRef({ active: false, startX: 0, startY: 0, winX: 0, winY: 0 })
   const streamTargetRef = useRef<HistoryRecord | null>(null)
+  const streamShownRef = useRef({ runId: '', answerMarkdown: '' })
   const streamTimerRef = useRef<number | null>(null)
+  const nextStreamCharacterAtRef = useRef(0)
   const { activeTtsKey, toggleDesktopSpeak } = useDesktopTts()
 
   const stopStreamPump = () => {
     if (streamTimerRef.current !== null) {
-      window.clearTimeout(streamTimerRef.current)
+      window.cancelAnimationFrame(streamTimerRef.current)
       streamTimerRef.current = null
+    }
+    nextStreamCharacterAtRef.current = 0
+  }
+
+  // Incoming chunks often arrive in uneven bursts. Advancing one code point
+  // per paint keeps the visible typing cadence tied to the display refresh.
+  const requestStreamFrame = () => {
+    if (streamTimerRef.current === null) {
+      streamTimerRef.current = window.requestAnimationFrame(pumpStream)
     }
   }
 
@@ -2033,37 +2050,56 @@ function ResultView() {
     const target = streamTargetRef.current
     if (!target) return
 
-    let needsAnotherFrame = false
+    const now = performance.now()
+    if (now < nextStreamCharacterAtRef.current) {
+      requestStreamFrame()
+      return
+    }
+
+    // Do not use a React state updater as the stream clock. React may defer
+    // that updater, meaning a local "needs another frame" flag is still false
+    // when checked below and the typewriter silently stops mid-answer.
+    const targetRunId = target.runId || ''
+    const shownState = streamShownRef.current
+    const shown = shownState.runId === targetRunId ? shownState.answerMarkdown : ''
+    const full = target.answerMarkdown || ''
+
+    if (!full.startsWith(shown)) {
+      // A provider can occasionally replace rather than append a partial
+      // chunk. Display the corrected payload rather than losing the result.
+      streamShownRef.current = { runId: targetRunId, answerMarkdown: full }
+      setRecord(target)
+      return
+    }
+
+    const backlog = full.length - shown.length
+    if (backlog <= 0) {
+      if (target.status !== 'running') setRecord(target)
+      return
+    }
+
+    const codePoint = full.codePointAt(shown.length)
+    const characterWidth = codePoint !== undefined && codePoint > 0xffff ? 2 : 1
+    const sliceEnd = Math.min(full.length, shown.length + characterWidth)
+    const answerMarkdown = full.slice(0, sliceEnd)
+    const needsAnotherFrame = sliceEnd < full.length
+    streamShownRef.current = { runId: targetRunId, answerMarkdown }
+    nextStreamCharacterAtRef.current = now + STREAM_CHARACTER_INTERVAL_MS
     setRecord((current) => {
-      if (!current || current.runId !== target.runId) return target
-      const shown = current.answerMarkdown || ''
-      const full = target.answerMarkdown || ''
-      if (!full.startsWith(shown)) return target
-
-      const backlog = full.length - shown.length
-      if (backlog <= 0) return target.status === 'running' ? { ...target, answerMarkdown: shown } : target
-
-      const preferredEnd = Math.min(full.length, shown.length + getStreamBatchSize(backlog))
-      const nearbyNewline = full.indexOf('\n', preferredEnd)
-      const sliceEnd = nearbyNewline >= 0 && nearbyNewline - preferredEnd <= 24 ? nearbyNewline + 1 : preferredEnd
-      needsAnotherFrame = sliceEnd < full.length || target.status === 'running'
+      if (current && current.runId !== target.runId) return current
       return {
         ...target,
-        status: sliceEnd < full.length ? 'running' : target.status,
-        answerMarkdown: full.slice(0, sliceEnd),
+        status: needsAnotherFrame ? 'running' : target.status,
+        answerMarkdown,
       }
     })
 
-    if (needsAnotherFrame && streamTimerRef.current === null) {
-      streamTimerRef.current = window.setTimeout(pumpStream, STREAM_RENDER_INTERVAL_MS)
-    }
+    if (needsAnotherFrame) requestStreamFrame()
   }
 
   const enqueueStreamUpdate = (next: HistoryRecord) => {
     streamTargetRef.current = next
-    if (streamTimerRef.current === null) {
-      streamTimerRef.current = window.setTimeout(pumpStream, STREAM_RENDER_INTERVAL_MS)
-    }
+    requestStreamFrame()
   }
 
   useEffect(() => {
@@ -2079,6 +2115,8 @@ function ResultView() {
     const offReady = window.desktopApi.onResultReady((next) => {
       stopStreamPump()
       streamTargetRef.current = next
+      streamShownRef.current = { runId: next.runId || '', answerMarkdown: next.answerMarkdown || '' }
+      nextStreamCharacterAtRef.current = 0
       runIdRef.current = next.runId || ''
       renderTiming.current = { readyAt: Date.now(), firstUpdateAt: 0, firstPaintAt: 0, updateCount: 0, doneAt: 0, timer: null }
       if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] result:ready runId=' + next.runId); console.log('[RenderTiming] result:ready runId=' + next.runId)
@@ -2122,6 +2160,7 @@ function ResultView() {
     const offReset = window.desktopApi.onResultReset(() => {
       stopStreamPump()
       streamTargetRef.current = null
+      streamShownRef.current = { runId: '', answerMarkdown: '' }
       if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] result:reset prevRunId=' + runIdRef.current); console.log('[RenderTiming] result:reset prevRunId=' + runIdRef.current);
       if (renderTiming.current.timer) { clearInterval(renderTiming.current.timer); renderTiming.current.timer = null; }
       runIdRef.current = ''
@@ -2218,6 +2257,7 @@ function ResultView() {
 
   return (
     <motion.div
+      className="result-card-window"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12 }}
@@ -2455,12 +2495,65 @@ function normalizeMarkdownText(text: string) {
     .replace(/＊＊/g, '**')
 }
 
+const resultMarkdownComponents: Components = {
+  table: ({ node: _node, children, ...props }) => (
+    <div className="result-markdown-table" role="region" aria-label="结果表格" tabIndex={0}>
+      <table {...props}>{children}</table>
+    </div>
+  ),
+}
+
 function MarkdownView({ text }: { text: string }) {
-  return <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdownText(text)}</ReactMarkdown></div>
+  return <div className="markdown-body result-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>{normalizeMarkdownText(text)}</ReactMarkdown></div>
+}
+
+function countUnescapedMarkers(text: string, marker: string) {
+  let count = 0
+  for (let index = 0; index <= text.length - marker.length; index += 1) {
+    if (text.startsWith(marker, index) && text[index - 1] !== '\\') {
+      count += 1
+      index += marker.length - 1
+    }
+  }
+  return count
+}
+
+// This is presentation-only recovery for a partial stream. It never changes
+// the saved answer; it merely gives the Markdown parser a closed construct so
+// that an unfinished code block or emphasis marker keeps its final styling.
+function makeStreamingMarkdownSafe(text: string) {
+  let markdown = normalizeMarkdownText(text)
+  const fenceCount = (markdown.match(/(^|\n)```[^\n]*/g) || []).length
+  if (fenceCount % 2 === 1) markdown += '\n```'
+
+  const prose = markdown.replace(/```[\s\S]*?```/g, '')
+  if (countUnescapedMarkers(prose, '**') % 2 === 1) markdown += '**'
+  if (countUnescapedMarkers(prose, '`') % 2 === 1) markdown += '`'
+
+  // Make a complete-looking table as soon as the assistant has emitted a
+  // pipe-delimited header. The synthetic separator exists only in this render
+  // buffer and is replaced naturally by the provider's real separator.
+  const lines = markdown.split('\n')
+  const lastIndex = lines.length - 1
+  const lastLine = lines[lastIndex]?.trim() || ''
+  const looksLikeTableHeader = lastLine.startsWith('|') && (lastLine.match(/\|/g) || []).length >= 2
+  if (looksLikeTableHeader) {
+    const header = lastLine.endsWith('|') ? lastLine : `${lastLine}|`
+    lines[lastIndex] = header
+    const cells = header.slice(1, -1).split('|').length
+    markdown = `${lines.join('\n')}\n|${Array.from({ length: cells }, () => ' --- ').join('|')}|`
+  }
+
+  return markdown
 }
 
 function StreamingText({ text }: { text: string }) {
-  return <div className="streaming-text">{text}<span className="streaming-caret" aria-hidden="true" /></div>
+  return (
+    <div className="markdown-body result-markdown streaming-markdown">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>{makeStreamingMarkdownSafe(text)}</ReactMarkdown>
+      <span className="streaming-caret" aria-hidden="true" />
+    </div>
+  )
 }
 function normalizeIconKey(iconKey: string | undefined): string {
   return SKILL_ICON_KEYS.includes(iconKey as any) ? iconKey! : 'spark'

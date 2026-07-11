@@ -38,6 +38,12 @@ contextBridge.exposeInMainWorld('desktopApi', {
   showMain: () => ipcRenderer.invoke('window:show-main'),
   closeCurrent: () => ipcRenderer.invoke('window:close-current'),
   rendererLog: (msg) => ipcRenderer.send('renderer-log', msg),
+  setAppearance: (mode) => ipcRenderer.invoke('appearance:set', mode),
+  onAppearanceChanged: (callback) => {
+    const listener = (_event, mode) => callback(mode);
+    ipcRenderer.on('appearance:changed', listener);
+    return () => ipcRenderer.removeListener('appearance:changed', listener);
+  },
   hideToolbar: () => ipcRenderer.invoke('toolbar:hide'),
   resizeToolbar: (expanded) => ipcRenderer.invoke('toolbar:resize', expanded),
   toggleToolbarMore: (anchor) => ipcRenderer.invoke('toolbar-more:toggle', anchor),

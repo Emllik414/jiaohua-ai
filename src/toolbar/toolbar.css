@@ -542,13 +542,95 @@
 }
 @keyframes blink { 50% { opacity: 0; } }
 
-.streaming-text {
-  white-space: pre-wrap;
+#root .result-markdown {
   overflow-wrap: anywhere;
   color: var(--ui-text);
   font-size: 16px;
   line-height: 1.75;
   text-wrap: pretty;
+}
+#root .result-markdown > :first-child { margin-top: 0; }
+#root .result-markdown > :nth-last-child(2) { margin-bottom: 0; }
+#root .result-markdown h1,
+#root .result-markdown h2,
+#root .result-markdown h3 {
+  color: var(--ui-text);
+  font-weight: 700;
+  letter-spacing: -.015em;
+}
+#root .result-markdown h1 { font-size: 20px; line-height: 1.35; margin: 18px 0 10px; }
+#root .result-markdown h2 { font-size: 18px; line-height: 1.4; margin: 16px 0 8px; }
+#root .result-markdown h3 { font-size: 16px; line-height: 1.45; margin: 14px 0 7px; }
+#root .result-markdown ul,
+#root .result-markdown ol { margin: 8px 0 12px; padding-left: 21px; }
+#root .result-markdown li { margin: 5px 0; }
+#root .result-markdown blockquote {
+  margin: 10px 0;
+  padding: 7px 11px;
+  border-left: 3px solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  color: var(--ui-muted);
+  background: color-mix(in srgb, var(--ui-accent) 7%, transparent);
+  border-radius: 0 9px 9px 0;
+}
+#root .result-markdown code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  color: var(--ui-text);
+  background: color-mix(in srgb, var(--ui-text) 8%, transparent);
+  font-size: .88em;
+}
+#root .result-markdown pre {
+  margin: 10px 0;
+  padding: 10px 11px;
+  overflow: auto;
+  scrollbar-width: none;
+  border-radius: 10px;
+  color: #e8e8ef;
+  background: rgba(10, 11, 16, .54);
+}
+#root .result-markdown pre::-webkit-scrollbar { display: none; }
+#root .result-markdown pre code { padding: 0; background: transparent; color: inherit; }
+#root .result-markdown table {
+  width: 100%;
+  margin: 10px 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  overflow: hidden;
+  border: 1px solid var(--ui-hairline);
+  border-radius: 10px;
+  font-size: 13px;
+}
+#root .result-markdown th,
+#root .result-markdown td {
+  padding: 7px 8px;
+  overflow-wrap: anywhere;
+  border-right: 1px solid var(--ui-hairline);
+  border-bottom: 1px solid var(--ui-hairline);
+  text-align: left;
+  vertical-align: top;
+}
+#root .result-markdown th:last-child,
+#root .result-markdown td:last-child { border-right: 0; }
+#root .result-markdown tr:last-child td { border-bottom: 0; }
+#root .result-markdown th { color: var(--ui-text); background: color-mix(in srgb, var(--ui-text) 6%, transparent); font-weight: 700; }
+#root .result-markdown-table {
+  width: 100%;
+  margin: 10px 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border: 1px solid var(--ui-hairline);
+  border-radius: 10px;
+  scrollbar-width: none;
+}
+#root .result-markdown-table::-webkit-scrollbar { display: none; }
+#root .result-markdown-table table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  table-layout: auto;
 }
 .streaming-caret {
   display: inline-block;
@@ -864,6 +946,47 @@ html, body, #root { overflow: hidden !important; }
   visibility: visible;
   transform: translateX(-50%) translateY(0) scale(1);
   transition-delay: 0s;
+}
+
+/* The result BrowserWindow is a fixed-size viewport while streaming. The
+   direct motion wrapper must also fill that viewport; otherwise a percentage
+   height on .result-card resolves to auto and growing text pushes the footer
+   beyond the native window. */
+#root .result-card-window {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Header, output and footer are deliberately separate rows. Only the centre
+   row may scroll, so streaming content can never hide the action buttons. */
+#root .result-card {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) 46px;
+  overflow: visible;
+}
+#root .result-card-header { grid-row: 1; }
+#root .result-card-scroll-shell {
+  grid-row: 2;
+  min-height: 0;
+  height: auto;
+}
+#root .result-card-scroll {
+  min-height: 0;
+  height: 100%;
+  flex: none;
+  scroll-behavior: auto;
+}
+#root .result-card-footer {
+  grid-row: 3;
+  align-self: stretch;
+  height: 46px;
+  min-height: 46px;
 }
 
 
