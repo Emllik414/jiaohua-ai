@@ -1,8 +1,11 @@
 (function () {
   'use strict';
   // ????? Content script stability: version guard + AbortController ?????
-  var VERSION = '1.4.0-cjk-input-v3';
+  var VERSION = '1.6.0-selectable-video-captions';
   if (window.__AISEL_BOOTSTRAPPED__ === VERSION) return;
+  if (typeof window.__AISEL_CLEANUP__ === 'function') {
+    try { window.__AISEL_CLEANUP__(); } catch (_) {}
+  }
   window.__AISEL_BOOTSTRAPPED__ = VERSION;
   var ac = new AbortController();
   var signal = ac.signal;
@@ -73,6 +76,11 @@
 
   document.addEventListener('mouseup', (event) => {
     if (!mouseDown) return;
+    const eventTarget = asElement(event.target);
+    if (eventTarget && eventTarget.closest('.jiaohua-caption-drag-handle')) {
+      mouseDown = null;
+      return;
+    }
     const dx = Math.abs(event.clientX - mouseDown.x);
     const dy = Math.abs(event.clientY - mouseDown.y);
     if (dx < 6 && dy < 6) {
@@ -1079,6 +1087,301 @@
     lastSelection = data;
     doSend(data);
   }
+
+  // Video sites often render captions in draggable, non-selectable layers.
+  // Mirror live captions into a selectable overlay instead:
+  // the caption text keeps native browser selection while the separate handle
+  // owns moving the overlay. The native CC remains the source of truth and is
+  // only made transparent while the mirror is healthy and visible.
+  function createSelectableCaptionController() {
+    const isYouTube = /(^|\.)youtube\.com$/i.test(location.hostname);
+    const isBilibili = /(^|\.)bilibili\.com$/i.test(location.hostname);
+    if (!isYouTube && !isBilibili) return null;
+
+    const STYLE_ID = 'jiaohua-selectable-caption-style';
+    const OVERLAY_ID = 'jiaohua-selectable-caption-overlay';
+    const ACTIVE_CLASS = 'jiaohua-selectable-caption-active';
+    let overlay = null;
+    let textElement = null;
+    let player = null;
+    let observer = null;
+    let resizeObserver = null;
+    let syncQueued = false;
+    let userMoved = false;
+    let disposed = false;
+    let enabled = true;
+
+    document.getElementById(OVERLAY_ID)?.remove();
+    document.getElementById(STYLE_ID)?.remove();
+    document.documentElement.classList.remove(ACTIVE_CLASS);
+
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      html.${ACTIVE_CLASS} .html5-video-player .ytp-caption-window-container {
+        opacity: 0 !important;
+      }
+      html.${ACTIVE_CLASS} .bpx-player-video-area .bpx-player-subtitle-wrap {
+        opacity: 0 !important;
+      }
+      #${OVERLAY_ID} {
+        position: absolute;
+        z-index: 35;
+        display: none;
+        width: max-content;
+        max-width: min(86%, 960px);
+        transform: translateX(-50%);
+        pointer-events: none;
+        text-align: center;
+        font-family: Arial, Helvetica, sans-serif;
+        line-height: 1.32;
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .9));
+      }
+      #${OVERLAY_ID} .jiaohua-caption-drag-handle {
+        display: flex;
+        width: 42px;
+        height: 25px;
+        position: absolute;
+        left: 50%;
+        top: -33px;
+        margin-left: -21px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 14px;
+        background: rgba(20, 20, 20, .88);
+        color: #fff;
+        cursor: grab;
+        pointer-events: auto;
+        user-select: none;
+        -webkit-user-select: none;
+        touch-action: none;
+        font-size: 15px;
+        letter-spacing: 2px;
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(5px);
+        transition: opacity .14s ease, transform .14s ease, visibility .14s;
+      }
+      #${OVERLAY_ID}:hover .jiaohua-caption-drag-handle,
+      #${OVERLAY_ID}:focus-within .jiaohua-caption-drag-handle {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0);
+      }
+      #${OVERLAY_ID} .jiaohua-caption-drag-handle:active { cursor: grabbing; }
+      #${OVERLAY_ID} .jiaohua-caption-text {
+        display: block;
+        width: max-content;
+        max-width: 100%;
+        padding: .12em .28em .16em;
+        border-radius: .22em;
+        background: rgba(8, 8, 8, .32);
+        color: #fff;
+        cursor: text;
+        pointer-events: auto;
+        user-select: text !important;
+        -webkit-user-select: text !important;
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+        white-space: normal;
+        text-wrap: balance;
+      }
+      #${OVERLAY_ID} .jiaohua-caption-text::selection {
+        background: #2f7cf6;
+        color: #fff;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+
+    function hasVisibleBox(node) {
+      if (!node || !node.isConnected) return false;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    }
+
+    function captionState() {
+      if (isYouTube) {
+        const windows = Array.from(document.querySelectorAll('.ytp-caption-window-container'))
+          .filter((node) => node.id !== OVERLAY_ID && hasVisibleBox(node));
+        const segments = windows.flatMap((node) => Array.from(node.querySelectorAll('.ytp-caption-segment')))
+          .filter(hasVisibleBox);
+        const text = normalizeText(segments.map((node) => node.textContent || '').join(' '));
+        return { text, anchor: windows[0] || segments[0] || null };
+      }
+
+      const candidates = Array.from(document.querySelectorAll(
+        '.bpx-player-subtitle-wrap .bili-subtitle-x-subtitle-panel-text, ' +
+        '.bpx-player-subtitle-wrap [class*="subtitle-panel-text"]',
+      )).filter(hasVisibleBox);
+      const text = normalizeText(candidates.map((node) => node.textContent || '').join(' '));
+      return {
+        text: text === '字幕样式测试' ? '' : text,
+        anchor: candidates[0] || null,
+      };
+    }
+
+    function findPlayer() {
+      return isYouTube
+        ? document.querySelector('.html5-video-player')
+        : document.querySelector('.bpx-player-video-area, .bpx-player-container');
+    }
+
+    function ensureOverlay(nextPlayer) {
+      if (overlay && player === nextPlayer && overlay.isConnected) return;
+      overlay?.remove();
+      resizeObserver?.disconnect();
+      player = nextPlayer;
+      userMoved = false;
+
+      overlay = document.createElement('div');
+      overlay.id = OVERLAY_ID;
+      overlay.setAttribute('role', 'region');
+      overlay.setAttribute('aria-label', '饺滑可划词字幕');
+      const handle = document.createElement('div');
+      handle.className = 'jiaohua-caption-drag-handle';
+      handle.title = '拖动字幕';
+      handle.setAttribute('aria-label', '拖动字幕');
+      handle.textContent = '⠿';
+      textElement = document.createElement('span');
+      textElement.className = 'jiaohua-caption-text';
+      overlay.append(handle, textElement);
+      player.appendChild(overlay);
+      installDragHandle(handle);
+
+      resizeObserver = new ResizeObserver(() => {
+        if (!userMoved) queueSync();
+        else clampOverlayToPlayer();
+      });
+      resizeObserver.observe(player);
+    }
+
+    function installDragHandle(handle) {
+      handle.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || !overlay || !player) return;
+        event.preventDefault();
+        event.stopPropagation();
+        userMoved = true;
+        const playerRect = player.getBoundingClientRect();
+        const overlayRect = overlay.getBoundingClientRect();
+        const offsetX = event.clientX - overlayRect.left;
+        const offsetY = event.clientY - overlayRect.top;
+        handle.setPointerCapture(event.pointerId);
+
+        const move = (moveEvent) => {
+          moveEvent.preventDefault();
+          const halfWidth = overlayRect.width / 2;
+          const nextCenterX = moveEvent.clientX - playerRect.left - offsetX + halfWidth;
+          const nextTop = moveEvent.clientY - playerRect.top - offsetY;
+          setOverlayPosition(nextCenterX, nextTop);
+        };
+        const finish = () => {
+          handle.removeEventListener('pointermove', move);
+          handle.removeEventListener('pointerup', finish);
+          handle.removeEventListener('pointercancel', finish);
+        };
+        handle.addEventListener('pointermove', move);
+        handle.addEventListener('pointerup', finish);
+        handle.addEventListener('pointercancel', finish);
+      });
+    }
+
+    function setOverlayPosition(centerX, top) {
+      if (!overlay || !player) return;
+      const maxX = Math.max(24, player.clientWidth - 24);
+      const maxTop = Math.max(0, player.clientHeight - overlay.offsetHeight);
+      overlay.style.left = `${Math.max(24, Math.min(maxX, centerX))}px`;
+      overlay.style.top = `${Math.max(0, Math.min(maxTop, top))}px`;
+      overlay.style.bottom = 'auto';
+    }
+
+    function clampOverlayToPlayer() {
+      if (!overlay || !player) return;
+      const rect = overlay.getBoundingClientRect();
+      const playerRect = player.getBoundingClientRect();
+      setOverlayPosition(
+        rect.left - playerRect.left + rect.width / 2,
+        rect.top - playerRect.top,
+      );
+    }
+
+    function positionFromNative(anchor) {
+      if (!overlay || !player || !anchor || userMoved) return;
+      const nativeRect = anchor.getBoundingClientRect();
+      const playerRect = player.getBoundingClientRect();
+      setOverlayPosition(
+        nativeRect.left - playerRect.left + nativeRect.width / 2,
+        Math.max(12, nativeRect.top - playerRect.top - 32),
+      );
+    }
+
+    function sync() {
+      syncQueued = false;
+      if (disposed) return;
+      const nextPlayer = findPlayer();
+      const state = captionState();
+      if (!enabled || !nextPlayer || !state.text || !state.anchor) {
+        if (overlay) overlay.style.display = 'none';
+        document.documentElement.classList.remove(ACTIVE_CLASS);
+        return;
+      }
+
+      ensureOverlay(nextPlayer);
+      if (textElement.textContent !== state.text) textElement.textContent = state.text;
+      const nativeStyle = getComputedStyle(state.anchor.querySelector('.ytp-caption-segment') || state.anchor);
+      const nativeSize = Number.parseFloat(nativeStyle.fontSize);
+      const baseSize = Number.isFinite(nativeSize) ? nativeSize * .82 : player.clientHeight * .036;
+      const availableWidth = Math.min(player.clientWidth * .86, 960);
+      const hasCjk = /[\u3400-\u9fff]/.test(state.text);
+      const estimatedWidth = state.text.length * baseSize * (hasCjk ? .98 : .53);
+      const fitScale = estimatedWidth > availableWidth ? Math.max(.78, availableWidth / estimatedWidth) : 1;
+      overlay.style.fontSize = `${Math.max(15, Math.min(32, baseSize * fitScale))}px`;
+      overlay.style.display = 'block';
+      positionFromNative(state.anchor);
+      document.documentElement.classList.add(ACTIVE_CLASS);
+    }
+
+    function queueSync() {
+      if (syncQueued || disposed) return;
+      syncQueued = true;
+      requestAnimationFrame(sync);
+    }
+
+    observer = new MutationObserver(queueSync);
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    window.addEventListener('resize', queueSync, { signal });
+    document.addEventListener('fullscreenchange', queueSync, { signal });
+    queueSync();
+
+    const onStorageChanged = (changes, areaName) => {
+      if (areaName !== 'sync' || !changes.selectableCaptionsEnabled) return;
+      enabled = changes.selectableCaptionsEnabled.newValue !== false;
+      queueSync();
+    };
+    try {
+      chrome.storage.sync.get({ selectableCaptionsEnabled: true }, (stored) => {
+        enabled = stored.selectableCaptionsEnabled !== false;
+        queueSync();
+      });
+      chrome.storage.onChanged.addListener(onStorageChanged);
+    } catch (_) {}
+
+    return function cleanup() {
+      disposed = true;
+      observer?.disconnect();
+      resizeObserver?.disconnect();
+      overlay?.remove();
+      style.remove();
+      document.documentElement.classList.remove(ACTIVE_CLASS);
+      try { chrome.storage.onChanged.removeListener(onStorageChanged); } catch (_) {}
+    };
+  }
+
+  const cleanupSelectableCaptions = createSelectableCaptionController();
+  window.__AISEL_CLEANUP__ = function () {
+    try { ac.abort(); } catch (_) {}
+    try { cleanupSelectableCaptions?.(); } catch (_) {}
+  };
 
   function doSend(data, attempt) {
     if (typeof attempt === 'undefined') attempt = 0;

@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { motion } from 'motion/react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Toolbar } from './toolbar/Toolbar'
 import { MoreMenu } from './toolbar/MoreMenu'
 import { ResultCardChrome } from './toolbar/ResultCardChrome'
 import { buildMoreMenuSkills, buildToolbarActions } from './toolbar/actionRegistry'
-import brandImg from './assets/icon.png'
-import { SkillIcon, SKILL_ICON_KEYS, getDefaultSkillIconKey } from './components/SkillIcon'
+import { SkillIcon, SKILL_ICON_KEYS } from './components/SkillIcon'
+import brandLogo from './assets/jiao_hua_icon_128x128.png'
 import './App.css'
 
 // ─── types ───
@@ -32,7 +32,10 @@ type Skill = {
   type?: 'ai' | 'builtin'
   builtinAction?: string
   deletable?: boolean
+  iconKey?: string
 }
+
+type AppearanceMode = 'light' | 'dark' | 'system'
 
 type PronunciationData = {
   mode: 'word' | 'sentence'
@@ -40,6 +43,8 @@ type PronunciationData = {
   us_ipa?: string
   gb_ipa?: string
 }
+
+type AnswerFormat = 'rich' | 'plain' | 'json' | 'code' | 'template'
 
 type HistoryRecord = {
   id: string
@@ -49,9 +54,11 @@ type HistoryRecord = {
   selectedText: string
   skillId: string
   skillName: string
+  skillIconKey?: string
   providerId: string
   model: string
   answerMarkdown: string
+  answerFormat?: AnswerFormat
   status: 'running' | 'completed' | 'failed' | 'confirming'
   savedToObsidian: boolean
   obsidianPath: string
@@ -71,6 +78,7 @@ type Conversation = {
   id: string
   title: string
   pinned: boolean
+  pinnedAt?: string | null
   createdAt: string
   updatedAt: string
   lastActivityAt: string
@@ -150,16 +158,21 @@ declare global {
       deleteObsidianTemplate: (templateId: string) => Promise<ObsidianTemplate[]>
       previewObsidianTemplate: (templateId: string, recordId: string, record?: HistoryRecord) => Promise<{ markdown: string; relativePath: string; behavior: string; templateName: string }>
       saveToObsidianNote: (templateId: string, recordId: string, record?: HistoryRecord) => Promise<{ ok: boolean; path: string; templateName: string }>
+      saveManyToObsidian: (templateId: string, recordIds: string[]) => Promise<{ ok: boolean; successCount: number; failureCount: number; results: Array<{ recordId: string; ok: boolean; path?: string; error?: string }> }>
       listVaultNotes: () => Promise<string[]>
       checkVaultPath: (relativePath: string) => Promise<{ exists: boolean }>
       deleteHistory: (recordIds: string[]) => Promise<InitialData>
       clearHistory: () => Promise<InitialData>
+      chooseHistoryExportDirectory: () => Promise<{ canceled: boolean; directory: string }>
+      exportHistory: (options: { recordIds: string[]; format: 'markdown' | 'word' | 'txt'; fileName: string; directory: string }) => Promise<{ ok: boolean; filePath: string; recordCount: number }>
       speak: (text: string, options?: { key?: string }) => Promise<{ ok: boolean; speaking?: boolean }>
       stopSpeak: () => Promise<{ ok: boolean; speaking?: boolean }>
       onTtsState: (callback: (payload: TtsStatePayload) => void) => () => void
       showMain: () => Promise<{ ok: boolean }>
       closeCurrent: () => Promise<{ ok: boolean }>
       rendererLog?: (message: string) => void
+      setAppearance: (mode: AppearanceMode) => Promise<unknown>
+      onAppearanceChanged: (callback: (mode: AppearanceMode) => void) => () => void
       hideToolbar: () => Promise<{ ok: boolean }>
       resizeToolbar: (expanded: boolean) => Promise<{ ok: boolean }>
       toggleToolbarMore: () => Promise<{ ok: boolean; open: boolean }>
@@ -212,7 +225,7 @@ const emptySkill: Skill = {
   iconKey: 'spark',
   enabled: true,
   showInToolbar: true,
-  systemPrompt: '你是 饺划-AI划词助手，请用中文回答。',
+  systemPrompt: '你是 饺滑-AI划词助手，请用中文回答。',
   userPrompt: '请处理下面划词内容：\n\n{{selection}}',
   outputMode: 'popup',
   sortOrder: 100,
@@ -259,11 +272,36 @@ function useDesktopTts() {
 }
 
 export default function App() {
+  useAppearanceBootstrap()
   const route = routeName()
   if (route === 'toolbar') return <ToolbarView />
   if (route === 'toolbar-more') return <ToolbarMoreView />
   if (route === 'result') return <ResultView />
   return <MainView />
+}
+
+function useAppearanceBootstrap() {
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const sync = () => applyAppearance(getStoredAppearance(), media.matches)
+    const syncFromMain = (mode: AppearanceMode) => {
+      localStorage.setItem(APPEARANCE_STORAGE_KEY, mode)
+      applyAppearance(mode, media.matches)
+    }
+    sync()
+    // Migrate the renderer-only preference used by older versions into the
+    // main process so future BrowserWindows have the right native frame from
+    // their first paint.
+    void window.desktopApi.setAppearance(getStoredAppearance())
+    media.addEventListener('change', sync)
+    window.addEventListener('storage', sync)
+    const unsubscribe = window.desktopApi.onAppearanceChanged(syncFromMain)
+    return () => {
+      media.removeEventListener('change', sync)
+      window.removeEventListener('storage', sync)
+      unsubscribe()
+    }
+  }, [])
 }
 
 function MainView() {
@@ -276,7 +314,7 @@ function MainView() {
     return window.desktopApi.onHistoryChanged((history) => setData((current) => current ? { ...current, history } : current))
   }, [])
 
-  if (!data) return <div className="loading">正在启动 饺划-AI划词助手...</div>
+  if (!data) return <div className="loading">正在启动 饺滑-AI划词助手...</div>
 
   const saveSettings = async (settings: Settings) => {
     const next = await window.desktopApi.saveSettings(settings)
@@ -308,30 +346,31 @@ function MainView() {
       <div className="main-glass-window">
         <aside className="sidebar">
           <div className="brand">
-            <div className="brand-icon">🧤</div>
+            <div className="brand-icon"><img src={brandLogo} alt="饺滑" /></div>
             <div>
-              <div className="brand-title">饺划-AI划词助手</div>
+              <div className="brand-title">饺滑-AI划词助手</div>
               <div className="brand-sub">Selection Copilot</div>
             </div>
           </div>
           <nav className="nav">
             {[
-              ['history', '●', '历史对话'],
-              ['settings', '⚙', 'API 设置'],
-              ['skills', '◆', '技能管理'],
-              ['obsidian', '●', 'Obsidian 导入'],
+              ['history', 'history', '历史对话'],
+              ['settings', 'api', 'API 设置'],
+              ['skills', 'skills', '技能管理'],
+              ['obsidian', 'obsidian', 'Obsidian 导入'],
             ].map(([id, icon, label]) => (
               <div
                 key={id}
                 className={'nav-item' + (tab === id ? ' active' : '')}
                 onClick={() => setTab(id as typeof tab)}
               >
-                <span className="nav-icon">{icon}</span>
+                <span className="nav-icon"><SkillIcon iconKey={icon} /></span>
                 <span>{label}</span>
               </div>
             ))}
           </nav>
           <div className="sidebar-spacer" />
+          <AppearanceControl />
           <HotkeyCard />
           <div className="version">v1.0.0</div>
         </aside>
@@ -349,6 +388,73 @@ function MainView() {
           {tab === 'obsidian' && <ObsidianPanel settings={data.settings} onSave={saveSettings} dataDir={data.dataDir} templates={data.obsidianTemplates} />}
         </main>
       </div>
+    </div>
+  )
+}
+
+const APPEARANCE_STORAGE_KEY = 'jiaohua.appearance'
+
+function getStoredAppearance(): AppearanceMode {
+  const stored = localStorage.getItem(APPEARANCE_STORAGE_KEY)
+  return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
+}
+
+function applyAppearance(mode: AppearanceMode, systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  const resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
+  document.documentElement.dataset.appearance = resolved
+  document.documentElement.style.colorScheme = resolved
+}
+
+function AppearanceControl() {
+  const [mode, setMode] = useState<AppearanceMode>(getStoredAppearance)
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const sync = () => applyAppearance(mode, media.matches)
+    sync()
+    media.addEventListener('change', sync)
+    return () => media.removeEventListener('change', sync)
+  }, [mode])
+
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [])
+
+  const choose = (next: AppearanceMode) => {
+    localStorage.setItem(APPEARANCE_STORAGE_KEY, next)
+    applyAppearance(next)
+    void window.desktopApi.setAppearance(next)
+    setMode(next)
+    setOpen(false)
+  }
+
+  const labels: Record<AppearanceMode, string> = { light: '浅色', dark: '深色', system: '跟随系统' }
+  const icons: Record<AppearanceMode, string> = { light: 'sun', dark: 'moon', system: 'system' }
+
+  return (
+    <div className="appearance-control" ref={rootRef}>
+      <button className="appearance-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <SkillIcon iconKey={icons[mode]} />
+        <span>外观与颜色</span>
+        <em>{labels[mode]}</em>
+      </button>
+      {open ? (
+        <div className="appearance-menu">
+          {(['light', 'dark', 'system'] as AppearanceMode[]).map((item) => (
+            <button key={item} className={mode === item ? 'active' : ''} onClick={() => choose(item)}>
+              <SkillIcon iconKey={icons[item]} />
+              <span>{labels[item]}</span>
+              {mode === item ? <b>✓</b> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -460,6 +566,18 @@ function tabSubtitle(tab: string) {
   // ─── 选择模式 ───
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'markdown' | 'word' | 'txt'>('markdown')
+  const [exportFileName, setExportFileName] = useState('JiaoHua AI 历史记录')
+  const [exportDirectory, setExportDirectory] = useState('')
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
+  const obsidianButtonRef = useRef<HTMLButtonElement>(null)
+  const templateMenuRef = useRef<HTMLDivElement>(null)
+  const templateOptionsRef = useRef<HTMLDivElement>(null)
+  const [templateCanScrollDown, setTemplateCanScrollDown] = useState(false)
+  const operationConversationRef = useRef(activeConversationId)
 
   const activeConv = conversations.find((c) => c.id === activeConversationId)
   const convRecords = useMemo(() => {
@@ -473,36 +591,92 @@ function tabSubtitle(tab: string) {
     return conversations.filter((c) => !q || c.title.toLowerCase().includes(q))
   }, [conversations, convSearch])
 
-  const sortedConvs = useMemo(() => {
-    const pinned = filteredConvs.filter((c) => c.pinned).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
-    const unpinned = filteredConvs.filter((c) => !c.pinned).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
-    return [...pinned, ...unpinned]
-  }, [filteredConvs])
-
-  // ─── 对话分组 ───
+  // 置顶对话拥有独立分组，不再参与日期分组。
   const convGroups = useMemo(() => {
+    const pinned = filteredConvs
+      .filter((c) => c.pinned)
+      .sort((a, b) => (b.pinnedAt || b.updatedAt).localeCompare(a.pinnedAt || a.updatedAt))
+    const unpinned = filteredConvs
+      .filter((c) => !c.pinned)
+      .sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
     const map = new Map<string, Conversation[]>()
-    for (const c of sortedConvs) {
+    for (const c of unpinned) {
       const key = formatDateGroup(c.lastActivityAt)
       if (!map.has(key)) map.set(key, [])
       map.get(key)!.push(c)
     }
-    return Array.from(map.entries())
-  }, [sortedConvs])
+    const dated = Array.from(map.entries())
+    return pinned.length ? ([['置顶', pinned], ...dated] as [string, Conversation[]][]) : dated
+  }, [filteredConvs])
 
   const enterSelectMode = () => { setSelectMode(true); setSelectedIds(new Set()) }
-  const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()) }
+  const exitSelectMode = () => {
+    setSelectMode(false)
+    setSelectedIds(new Set())
+    setTplOpen(false)
+    setExportOpen(false)
+  }
 
   // ─── 模板选择器 ───
   const [tplOpen, setTplOpen] = useState(false)
-  const [localActiveTplId, setLocalActiveTplId] = useState(activeTemplateId)
-  const activeTpl = templates.find((t) => t.id === localActiveTplId) || templates[0]
-  const switchTemplate = async (tplId: string) => {
-    setLocalActiveTplId(tplId)
+
+  useEffect(() => {
+    operationConversationRef.current = activeConversationId
+    setSelectMode(false)
+    setSelectedIds(new Set())
     setTplOpen(false)
-    const data = await window.desktopApi.getInitialData()
-    await window.desktopApi.saveSettings({ ...data.settings, obsidian: { ...data.settings.obsidian, activeTemplateId: tplId } })
-  }
+    setExportOpen(false)
+    setMessage('')
+    setIsDeleting(false)
+    setIsExporting(false)
+    setIsImporting(false)
+  }, [activeConversationId])
+
+  useEffect(() => {
+    const validIds = new Set(convRecords.map((record) => record.id))
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => validIds.has(id)))
+      return next.size === current.size ? current : next
+    })
+  }, [convRecords])
+
+  useEffect(() => {
+    if (selectedIds.size === 0) setTplOpen(false)
+  }, [selectedIds.size])
+
+  useEffect(() => {
+    if (!tplOpen) return
+    const closeOnPointer = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (!templateMenuRef.current?.contains(target) && !obsidianButtonRef.current?.contains(target)) setTplOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setTplOpen(false) }
+    window.addEventListener('mousedown', closeOnPointer)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('mousedown', closeOnPointer)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [tplOpen])
+
+  useEffect(() => {
+    if (!tplOpen) {
+      setTemplateCanScrollDown(false)
+      return
+    }
+    const element = templateOptionsRef.current
+    if (!element) return
+    const update = () => setTemplateCanScrollDown(element.scrollHeight - element.scrollTop - element.clientHeight > 8)
+    const frame = requestAnimationFrame(update)
+    element.addEventListener('scroll', update)
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => {
+      cancelAnimationFrame(frame)
+      element.removeEventListener('scroll', update)
+      observer.disconnect()
+    }
+  }, [tplOpen, templates.length])
 
   const toggleSelectId = (id: string) => {
     setSelectedIds((prev) => {
@@ -516,22 +690,67 @@ function tabSubtitle(tab: string) {
   const selectAll = () => { setSelectedIds(new Set(convRecords.map((r) => r.id))) }
   const deselectAll = () => { setSelectedIds(new Set()) }
 
-  const selectedRecords = useMemo(() => convRecords.filter((r) => selectedIds.has(r.id)), [convRecords, selectedIds])
-
-  const importToObsidian = async (records: HistoryRecord[]) => {
-    if (records.length === 0) { setMessage('没有可导入的记录'); return }
-    let ok = 0, fail = 0
-    for (const r of records) {
-      try { await saveRecordToActiveObsidian(r); ok++ }
-      catch { fail++ }
+  const importSelectedToObsidian = async (templateId: string) => {
+    if (selectedIds.size === 0 || isImporting) return
+    const operationConversationId = activeConversationId
+    setTplOpen(false)
+    setIsImporting(true)
+    setMessage('')
+    try {
+      const result = await window.desktopApi.saveManyToObsidian(templateId, [...selectedIds])
+      if (operationConversationRef.current !== operationConversationId) return
+      setMessage(`已导入 ${result.successCount} 条${result.failureCount > 0 ? `，${result.failureCount} 条失败或已导入` : ''}`)
+      onRefresh()
+    } catch (error) {
+      if (operationConversationRef.current !== operationConversationId) return
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (operationConversationRef.current === operationConversationId) setIsImporting(false)
     }
-    setMessage(`已导入 ${ok} 条${fail > 0 ? `，${fail} 条失败` : ''}`)
+  }
+  const deleteSingle = async (id: string) => { await window.desktopApi.deleteHistory([id]); onRefresh() }
+  const deleteSelected = async () => {
+    if (!selectedIds.size || isDeleting) return
+    if (!confirm('确定删除选中的 ' + selectedIds.size + ' 条记录吗？')) return
+    const operationConversationId = activeConversationId
+    setIsDeleting(true)
+    setMessage('')
+    try {
+      await window.desktopApi.deleteHistory([...selectedIds])
+      if (operationConversationRef.current !== operationConversationId) return
+      setSelectedIds(new Set())
+      onRefresh()
+    } catch (error) {
+      if (operationConversationRef.current !== operationConversationId) return
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (operationConversationRef.current === operationConversationId) setIsDeleting(false)
+    }
   }
 
-  const importAllToObsidian = () => importToObsidian(convRecords)
-  const importSelectedToObsidian = () => importToObsidian(selectedRecords)
-  const deleteSingle = async (id: string) => { await window.desktopApi.deleteHistory([id]); onRefresh() }
-  const deleteSelected = async () => { if (selectedIds.size) { await window.desktopApi.deleteHistory([...selectedIds]); onRefresh() } }
+  const chooseExportDirectory = async () => {
+    const result = await window.desktopApi.chooseHistoryExportDirectory()
+    if (!result.canceled) setExportDirectory(result.directory)
+  }
+
+  const confirmExport = async () => {
+    if (!exportDirectory) { setMessage('请先选择导出文件夹'); return }
+    if (!exportFileName.trim()) { setMessage('请输入导出文件名'); return }
+    const operationConversationId = activeConversationId
+    setIsExporting(true)
+    setMessage('')
+    try {
+      const result = await window.desktopApi.exportHistory({ recordIds: [...selectedIds], format: exportFormat, fileName: exportFileName, directory: exportDirectory })
+      if (operationConversationRef.current !== operationConversationId) return
+      setExportOpen(false)
+      setMessage(`已导出 ${result.recordCount} 条记录：${result.filePath}`)
+    } catch (error) {
+      if (operationConversationRef.current !== operationConversationId) return
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (operationConversationRef.current === operationConversationId) setIsExporting(false)
+    }
+  }
 
   // ─── 全部展开/收起 ───
   const allExpanded = convRecords.length > 0 && convRecords.every((r) => expandedIds.has(r.id))
@@ -609,38 +828,54 @@ function tabSubtitle(tab: string) {
               <h2>{activeConv?.title || '对话式历史'}</h2>
               <p>{convRecords.length} 条记录</p>
             </div>
-            {!selectMode ? (
-              <div className="history-actions">
-                <button className="btn" onClick={toggleAllExpanded}>{allExpanded ? '全部收起' : '全部展开'}</button>
-                <button className="btn primary" onClick={enterSelectMode}>选择</button>
-              </div>
-            ) : (
-              <div className="selection-toolbar">
-                <span className="select-pill">已选择 {selectedIds.size} 条</span>
-                <button className="btn" onClick={allSelected ? deselectAll : selectAll}>{allSelected ? '取消全选' : '全选'}</button>
-                <div className="grow" />
-                {activeTpl ? (
-                  <div className="tpl-selector">
-                    <button className="tpl-chip" onClick={() => setTplOpen(!tplOpen)}>
-                      <span className="tpl-label">模板</span>
-                      <span className="tpl-name">{activeTpl.name}</span>
-                      <span className={'tpl-arrow' + (tplOpen ? ' open' : '')}>▾</span>
-                    </button>
-                    {tplOpen ? (
-                      <div className="tpl-dropdown">
-                        {templates.map((t) => (
-                          <button key={t.id} className={'tpl-item' + (t.id === activeTpl.id ? ' active' : '')} onClick={() => switchTemplate(t.id)}>{t.id === activeTpl.id ? '✓ ' : ''}{t.name}</button>
+            <div className="history-batch-actions">
+              <button className={'btn' + (selectMode ? ' active' : '')} onClick={selectMode ? exitSelectMode : enterSelectMode}>{selectMode ? '完成选择' : '选择'}</button>
+              <button className="btn danger" onClick={() => void deleteSelected()} disabled={selectedIds.size === 0 || isDeleting}>{isDeleting ? '删除中…' : '删除'}</button>
+              <button className="btn" onClick={toggleAllExpanded}>{allExpanded ? '全部折叠' : '全部展开'}</button>
+              <button className="btn export-action" onClick={() => setExportOpen(true)} disabled={selectedIds.size === 0 || isExporting}>导出</button>
+              <div className="history-obsidian-action">
+                <button ref={obsidianButtonRef} className="btn purple" onClick={() => setTplOpen((open) => !open)} disabled={selectedIds.size === 0 || isImporting || templates.length === 0}>{isImporting ? '导入中…' : '导入 Obsidian'}</button>
+                {tplOpen ? (
+                  <div className="history-template-popover" ref={templateMenuRef} role="menu">
+                    <div className="history-template-popover-head">
+                      <strong>选择导入模板</strong>
+                      <span>选择后立即导入所选记录</span>
+                    </div>
+                    <div className="history-template-scroll-shell">
+                      <div className="history-template-options" ref={templateOptionsRef}>
+                        {templates.map((template) => (
+                          <button key={template.id} className={template.id === activeTemplateId ? 'active' : ''} onClick={() => void importSelectedToObsidian(template.id)} role="menuitem">
+                            <span className="history-template-dot" />
+                            <span className="history-template-option-main">
+                              <strong>{template.name}</strong>
+                              <small>{template.id === activeTemplateId ? '默认模板' : 'Obsidian 模板'}</small>
+                            </span>
+                            {template.id === activeTemplateId ? <span className="history-template-check">✓</span> : null}
+                          </button>
                         ))}
                       </div>
-                    ) : null}
+                      <button
+                        className={'history-template-scroll-hint' + (templateCanScrollDown ? ' show' : '')}
+                        aria-label="滚动查看更多模板"
+                        tabIndex={templateCanScrollDown ? 0 : -1}
+                        onClick={() => templateOptionsRef.current?.scrollTo({ top: templateOptionsRef.current.scrollHeight, behavior: 'smooth' })}
+                      ><span aria-hidden="true">↓</span></button>
+                    </div>
                   </div>
                 ) : null}
-                <button className="btn purple" onClick={importSelectedToObsidian} disabled={selectedIds.size === 0}>导入 Obsidian</button>
-                <button className="btn danger" onClick={() => { if (confirm('确定删除选中的 ' + selectedIds.size + ' 条记录吗？')) { deleteSelected(); exitSelectMode() } }} disabled={selectedIds.size === 0}>删除</button>
-                <button className="btn" onClick={exitSelectMode}>完成</button>
               </div>
-            )}
+            </div>
           </div>
+
+          {selectMode ? (
+            <div className="history-selection-bar">
+              <span>已选择 <b>{selectedIds.size}</b> 条记录</span>
+              <div>
+                <button onClick={selectAll} disabled={allSelected}>全选</button>
+                <button onClick={deselectAll} disabled={selectedIds.size === 0}>清空选择</button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="records-search">
             <input className="search" placeholder="搜索当前对话..." value={filter} onChange={(e) => setFilter(e.target.value)} />
@@ -667,6 +902,70 @@ function tabSubtitle(tab: string) {
           </div>
         </section>
       </div>
+      {exportOpen ? (
+        <HistoryExportDrawer
+          count={selectedIds.size}
+          format={exportFormat}
+          fileName={exportFileName}
+          directory={exportDirectory}
+          busy={isExporting}
+          onFormat={setExportFormat}
+          onFileName={setExportFileName}
+          onChooseDirectory={() => void chooseExportDirectory()}
+          onClose={() => { if (!isExporting) setExportOpen(false) }}
+          onConfirm={() => void confirmExport()}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function HistoryExportDrawer({ count, format, fileName, directory, busy, onFormat, onFileName, onChooseDirectory, onClose, onConfirm }: {
+  count: number
+  format: 'markdown' | 'word' | 'txt'
+  fileName: string
+  directory: string
+  busy: boolean
+  onFormat: (format: 'markdown' | 'word' | 'txt') => void
+  onFileName: (value: string) => void
+  onChooseDirectory: () => void
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const formats: Array<{ id: 'markdown' | 'word' | 'txt'; name: string; extension: string; description: string }> = [
+    { id: 'markdown', name: 'Markdown', extension: '.md', description: '保留清晰的标题层级' },
+    { id: 'word', name: 'Word', extension: '.docx', description: '可在 Office 中继续编辑' },
+    { id: 'txt', name: 'TXT', extension: '.txt', description: '轻量纯文本' },
+  ]
+  return (
+    <div className="history-export-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <aside className="history-export-drawer" role="dialog" aria-modal="true" aria-label="导出文档">
+        <header>
+          <div><h2>导出文档</h2><p>导出主界面已勾选的 {count} 条历史记录</p></div>
+          <button className="history-export-close" onClick={onClose} disabled={busy} aria-label="关闭">×</button>
+        </header>
+        <div className="history-export-body">
+          <section>
+            <label>文件格式</label>
+            <div className="history-export-formats">
+              {formats.map((item) => (
+                <button key={item.id} className={format === item.id ? 'active' : ''} onClick={() => onFormat(item.id)}>
+                  <strong>{item.name}</strong><span>{item.extension}</span><small>{item.description}</small>
+                </button>
+              ))}
+            </div>
+          </section>
+          <section>
+            <label htmlFor="history-export-name">文件名称</label>
+            <div className="history-export-name"><input id="history-export-name" value={fileName} onChange={(event) => onFileName(event.target.value)} /><span>{formats.find((item) => item.id === format)?.extension}</span></div>
+          </section>
+          <section>
+            <label>本地保存文件夹</label>
+            <div className="history-export-directory"><span title={directory}>{directory || '尚未选择文件夹'}</span><button onClick={onChooseDirectory}>选择文件夹</button></div>
+          </section>
+        </div>
+        <footer><span>导出 {count} 条记录</span><button className="primary" onClick={onConfirm} disabled={busy || count === 0}>{busy ? '正在导出…' : '导出到本地'}</button></footer>
+      </aside>
     </div>
   )
 }
@@ -683,13 +982,13 @@ function ConversationItem({ conv, active, editing, editTitle, recordCount, onSel
         <input className="conv-edit-input" value={editTitle} onChange={(e) => onEditStart(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') onEditConfirm() }} onBlur={onEditConfirm} autoFocus onClick={(e) => e.stopPropagation()} />
       ) : (
         <>
-          <div className="conversation-item-title">{conv.pinned ? '📌 ' : ''}{conv.title}</div>
+          <div className="conversation-item-title">{conv.title}</div>
           <div className="conversation-item-meta">{recordCount} 条记录</div>
           {active ? (
             <div className="conv-actions" onClick={(e) => e.stopPropagation()}>
-              <button title="重命名" onClick={() => onEditStart(conv.title)}>✏️</button>
-              <button title={conv.pinned ? '取消置顶' : '置顶'} onClick={onPin}>{conv.pinned ? '📌' : '📍'}</button>
-              <button title="删除" onClick={onDelete}>🗑️</button>
+              <button title="重命名" aria-label="重命名" onClick={() => onEditStart(conv.title)}><SkillIcon iconKey="pen" /></button>
+              <button className={conv.pinned ? 'active' : ''} title={conv.pinned ? '取消置顶' : '置顶'} aria-label={conv.pinned ? '取消置顶' : '置顶'} onClick={onPin}><SkillIcon iconKey="pin" /></button>
+              <button title="删除" aria-label="删除" onClick={onDelete}><SkillIcon iconKey="trash" /></button>
             </div>
           ) : null}
         </>
@@ -785,11 +1084,11 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
             <div className="record-source-text">{item.selectedText}</div>
           </div>
           {item.pronunciationData ? (
-            <PronunciationCard data={item.pronunciationData} answer={item.answerMarkdown} status={item.status} />
+            <PronunciationCard data={item.pronunciationData} answer={item.answerMarkdown} answerFormat={item.answerFormat} status={item.status} />
           ) : (
             <div className="record-answer">
               <div className="record-answer-label">AI 回答</div>
-              {item.answerMarkdown ? <MarkdownView text={item.answerMarkdown} /> : isRunning ? <TypingDots /> : null}
+              {item.answerMarkdown ? <AnswerView text={item.answerMarkdown} format={item.answerFormat} variant="history" streaming={isRunning} /> : isRunning ? <TypingDots /> : null}
             </div>
           )}
           <div className="record-actions">
@@ -834,6 +1133,7 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
 
   const preset = presets[selectedId]
   const pcfg = config.providers[selectedId]
+  const supportsStreaming = preset.apiType === 'openai-compatible-chat'
   const availableModels = [...new Set([...(preset?.models || []), ...(pcfg?.customModels || [])])]
 
   const save = async (updates: Record<string, Partial<ProviderUserConfig>>) => {
@@ -951,12 +1251,15 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
               </div>
             </div>
 
-            <div className="form-row">
-              <label className="inline-label">
-                <input type="checkbox" checked={pcfg?.stream !== false} onChange={(e) => save({ [selectedId]: { stream: e.target.checked } })} />
-                <span>流式输出</span>
-              </label>
-            </div>
+            {supportsStreaming ? (
+              <div className="form-row">
+                <label className="inline-label">
+                  <input type="checkbox" checked={pcfg?.stream !== false} onChange={(e) => save({ [selectedId]: { stream: e.target.checked } })} />
+                  <span>流式输出</span>
+                </label>
+                <div className="form-row-hint">开启后回答会边生成边显示；关闭后等待完整回答再一次显示。</div>
+              </div>
+            ) : null}
 
             <button className="api-advanced-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
               {showAdvanced ? '▲ 收起高级设置' : '▼ 高级设置'}
@@ -1004,11 +1307,9 @@ function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSel
   )
 }
 function isCustomSkill(skill: Skill) {
-  if (skill.deletable === false) return false
-  return skill.id.startsWith('custom_') || skill.id === 'custom_skill'
+  return skill.deletable !== false && skill.type !== 'builtin'
 }
 
-const toolbarSkillLimit = 5
 
 function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[]; onSave: (skill: Skill) => void; onDelete: (skillId: string) => void; onReorder: (skillIds: string[]) => void }) {
   const sortedSkills = useMemo(() => [...skills].sort((a, b) => a.sortOrder - b.sortOrder), [skills])
@@ -1017,7 +1318,7 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
   const skillById = useMemo(() => new Map(sortedSkills.map((skill) => [skill.id, skill])), [sortedSkills])
 
   const [menuSkill, setMenuSkill] = useState<Skill | null>(null)
-  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const [menuSide, setMenuSide] = useState<'above' | 'below'>('below')
   const [editing, setEditing] = useState<Skill | null>(null)
   const [draggingId, setDraggingId] = useState('')
   const [dragOverId, setDragOverId] = useState('')
@@ -1059,7 +1360,6 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuSkill(null)
-        setMenuPos(null)
       }
     }
     if (menuSkill) {
@@ -1070,7 +1370,7 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
 
   const openMenu = (e: React.MouseEvent, skill: Skill) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    setMenuPos({ x: Math.min(rect.right - 180, window.innerWidth - 200), y: rect.bottom + 4 })
+    setMenuSide(rect.bottom + 230 > window.innerHeight ? 'above' : 'below')
     setMenuSkill(skill)
   }
 
@@ -1100,7 +1400,6 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
     setDragOverId('')
     setDragOverPosition('before')
     setMenuSkill(null)
-    setMenuPos(null)
 
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', skillId)
@@ -1177,11 +1476,13 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
         ? (dragOverPosition === 'after' ? ' drag-over-after' : ' drag-over-before')
         : ''
     return (
-      <div
+      <motion.div
         key={skill.id}
-        className={'skill-row' + (draggingId === skill.id ? ' dragging' : '') + dragClass}
+        layout
+        transition={{ layout: { type: 'spring', stiffness: 420, damping: 36, mass: 0.75 } }}
+        className={'skill-row' + (draggingId === skill.id ? ' dragging' : '') + (menuSkill?.id === skill.id ? ' menu-open' : '') + dragClass}
         draggable
-        onDragStart={(event) => handleDragStart(event, skill.id)}
+        onDragStartCapture={(event) => handleDragStart(event, skill.id)}
         onDragOver={(event) => handleDragOver(event, skill.id)}
         onDragEnter={(event) => handleDragOver(event, skill.id)}
         onDrop={(event) => handleDrop(event, skill.id)}
@@ -1195,7 +1496,41 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
         </div>
         <span className={'pill ' + (isAI ? 'purple' : 'system')}>{isAI ? 'AI 技能' : '系统技能'}</span>
         <button className="skill-row-more" onClick={(e) => openMenu(e, skill)}>⋯</button>
-      </div>
+        {menuSkill?.id === skill.id ? (
+          <div className={'skill-menu ' + menuSide} ref={menuRef} draggable={false} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="skill-menu-item" onClick={() => { setEditing({ ...skill }); setMenuSkill(null) }}>编辑技能</div>
+            {isCustomSkill(skill) ? (
+              <>
+                <div className="skill-menu-item" onClick={() => {
+                  const clone: Skill = { ...skill, id: 'custom_' + Date.now(), name: skill.name + ' (副本)', sortOrder: 1000 + skills.length }
+                  onSave(clone)
+                  setMenuSkill(null)
+                }}>复制为新技能</div>
+                <div className="skill-menu-sep" />
+                <div className="skill-menu-item danger" onClick={() => {
+                  onDelete(skill.id)
+                  setMenuSkill(null)
+                }}>删除技能</div>
+              </>
+            ) : null}
+            <div className="skill-menu-sep" />
+            <div className="skill-menu-item" onClick={() => {
+              const ids = displaySkills.map((s) => s.id)
+              const fromIdx = ids.indexOf(skill.id)
+              if (fromIdx > 0) { ids.splice(fromIdx, 1); ids.unshift(skill.id) }
+              onReorder(ids)
+              setMenuSkill(null)
+            }}>移到最前</div>
+            <div className="skill-menu-item" onClick={() => {
+              const ids = displaySkills.map((s) => s.id)
+              const fromIdx = ids.indexOf(skill.id)
+              if (fromIdx >= 0 && fromIdx < 5) { ids.splice(fromIdx, 1); ids.splice(5, 0, skill.id) }
+              onReorder(ids)
+              setMenuSkill(null)
+            }}>移到更多菜单</div>
+          </div>
+        ) : null}
+      </motion.div>
     )
   }
 
@@ -1228,41 +1563,6 @@ function SkillsPanel({ skills, onSave, onDelete, onReorder }: { skills: Skill[];
             <div className="section-card-desc">在 "..." 中显示的技能</div>
           </div>
           <div className="skill-rows">{moreSkills.map(renderSkillRow)}</div>
-        </div>
-      ) : null}
-
-      {menuSkill && menuPos ? (
-        <div className="skill-menu" ref={menuRef} style={{ left: menuPos.x + 'px', top: menuPos.y + 'px' }}>
-          <div className="skill-menu-item" onClick={() => { setEditing({ ...menuSkill }); setMenuSkill(null) }}>编辑技能</div>
-          {isCustomSkill(menuSkill) ? (
-            <>
-              <div className="skill-menu-item" onClick={() => {
-                const clone: Skill = { ...menuSkill, id: 'custom_' + Date.now(), name: menuSkill.name + ' (副本)', sortOrder: 1000 + skills.length }
-                onSave(clone)
-                setMenuSkill(null)
-              }}>复制为新技能</div>
-              <div className="skill-menu-sep" />
-              <div className="skill-menu-item danger" onClick={() => {
-                if (window.confirm('确定删除技能「' + menuSkill.name + '」吗？')) onDelete(menuSkill.id)
-                setMenuSkill(null)
-              }}>删除技能</div>
-            </>
-          ) : null}
-          <div className="skill-menu-sep" />
-          <div className="skill-menu-item" onClick={() => {
-            const ids = displaySkills.map((s) => s.id)
-            const fromIdx = ids.indexOf(menuSkill!.id)
-            if (fromIdx > 0) { ids.splice(fromIdx, 1); ids.unshift(menuSkill!.id) }
-            onReorder(ids)
-            setMenuSkill(null)
-          }}>移到最前</div>
-          <div className="skill-menu-item" onClick={() => {
-            const ids = displaySkills.map((s) => s.id)
-            const fromIdx = ids.indexOf(menuSkill!.id)
-            if (fromIdx >= 0 && fromIdx < 5) { ids.splice(fromIdx, 1); ids.splice(5, 0, menuSkill!.id) }
-            onReorder(ids)
-            setMenuSkill(null)
-          }}>移到更多菜单</div>
         </div>
       ) : null}
 
@@ -1914,9 +2214,12 @@ function ToolbarMoreView() {
 }
 
 function ResultView() {
+  const STREAM_CHARACTER_INTERVAL_MS = 28
   const [record, setRecord] = useState<HistoryRecord | null>(null)
   const [sourceExpanded, setSourceExpanded] = useState(false)
   const [footerMoreOpen, setFooterMoreOpen] = useState(false)
+  const [resultTemplates, setResultTemplates] = useState<ObsidianTemplate[]>([])
+  const [resultTemplateId, setResultTemplateId] = useState('')
   const [status, setStatus] = useState('')
   const [confirmText, setConfirmText] = useState('')
   const [confirmSkillId, setConfirmSkillId] = useState('')
@@ -1924,10 +2227,110 @@ function ResultView() {
   const renderTiming = useRef<{ readyAt: number; firstUpdateAt: number; firstPaintAt: number; updateCount: number; doneAt: number; timer: any }>({ readyAt: 0, firstUpdateAt: 0, firstPaintAt: 0, updateCount: 0, doneAt: 0, timer: null })
   const resultCardRef = useRef<HTMLDivElement>(null)
   const resultDragRef = useRef({ active: false, startX: 0, startY: 0, winX: 0, winY: 0 })
+  const streamTargetRef = useRef<HistoryRecord | null>(null)
+  const streamShownRef = useRef({ runId: '', answerMarkdown: '' })
+  const streamTimerRef = useRef<number | null>(null)
+  const nextStreamCharacterAtRef = useRef(0)
   const { activeTtsKey, toggleDesktopSpeak } = useDesktopTts()
+
+  const stopStreamPump = () => {
+    if (streamTimerRef.current !== null) {
+      window.cancelAnimationFrame(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+    nextStreamCharacterAtRef.current = 0
+  }
+
+  // Incoming chunks often arrive in uneven bursts. Advancing one code point
+  // per paint keeps the visible typing cadence tied to the display refresh.
+  const requestStreamFrame = () => {
+    if (streamTimerRef.current === null) {
+      streamTimerRef.current = window.requestAnimationFrame(pumpStream)
+    }
+  }
+
+  const pumpStream = () => {
+    streamTimerRef.current = null
+    const target = streamTargetRef.current
+    if (!target) return
+
+    const now = performance.now()
+    if (now < nextStreamCharacterAtRef.current) {
+      requestStreamFrame()
+      return
+    }
+
+    // Do not use a React state updater as the stream clock. React may defer
+    // that updater, meaning a local "needs another frame" flag is still false
+    // when checked below and the typewriter silently stops mid-answer.
+    const targetRunId = target.runId || ''
+    const shownState = streamShownRef.current
+    const shown = shownState.runId === targetRunId ? shownState.answerMarkdown : ''
+    const full = target.answerMarkdown || ''
+
+    if (!full.startsWith(shown)) {
+      // A provider can occasionally replace rather than append a partial
+      // chunk. Display the corrected payload rather than losing the result.
+      streamShownRef.current = { runId: targetRunId, answerMarkdown: full }
+      setRecord(target)
+      return
+    }
+
+    const backlog = full.length - shown.length
+    if (backlog <= 0) {
+      if (target.status !== 'running') setRecord(target)
+      return
+    }
+
+    const codePoint = full.codePointAt(shown.length)
+    const characterWidth = codePoint !== undefined && codePoint > 0xffff ? 2 : 1
+    const sliceEnd = Math.min(full.length, shown.length + characterWidth)
+    const answerMarkdown = full.slice(0, sliceEnd)
+    const needsAnotherFrame = sliceEnd < full.length
+    streamShownRef.current = { runId: targetRunId, answerMarkdown }
+    nextStreamCharacterAtRef.current = now + STREAM_CHARACTER_INTERVAL_MS
+    setRecord((current) => {
+      if (current && current.runId !== target.runId) return current
+      return {
+        ...target,
+        status: needsAnotherFrame ? 'running' : target.status,
+        answerMarkdown,
+      }
+    })
+
+    if (needsAnotherFrame) requestStreamFrame()
+  }
+
+  const enqueueStreamUpdate = (next: HistoryRecord) => {
+    streamTargetRef.current = next
+    requestStreamFrame()
+  }
+
+  useEffect(() => {
+    window.desktopApi.getInitialData().then((data) => {
+      const templates = data.obsidianTemplates || []
+      setResultTemplates(templates)
+      const preferred = data.settings.obsidian.activeTemplateId
+      setResultTemplateId(templates.some((item) => item.id === preferred) ? (preferred || '') : (templates[0]?.id || ''))
+    })
+  }, [])
+
+  useEffect(() => window.desktopApi.onSkillsUpdated((payload) => {
+    setRecord((current) => {
+      if (!current) return current
+      const skill = payload.allSkills.find((item) => item.id === current.skillId)
+      if (!skill) return current
+      const nextIconKey = normalizeIconKey(skill.iconKey)
+      return current.skillIconKey === nextIconKey ? current : { ...current, skillIconKey: nextIconKey }
+    })
+  }), [])
 
   useEffect(() => {
     const offReady = window.desktopApi.onResultReady((next) => {
+      stopStreamPump()
+      streamTargetRef.current = next
+      streamShownRef.current = { runId: next.runId || '', answerMarkdown: next.answerMarkdown || '' }
+      nextStreamCharacterAtRef.current = 0
       runIdRef.current = next.runId || ''
       renderTiming.current = { readyAt: Date.now(), firstUpdateAt: 0, firstPaintAt: 0, updateCount: 0, doneAt: 0, timer: null }
       if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] result:ready runId=' + next.runId); console.log('[RenderTiming] result:ready runId=' + next.runId)
@@ -1952,7 +2355,7 @@ function ResultView() {
           }, 500);
         }
       }
-      setRecord(next)
+      enqueueStreamUpdate(next)
       if (t.firstUpdateAt > 0 && t.firstPaintAt === 0) {
         requestAnimationFrame(function() {
           var rt = renderTiming.current;
@@ -1969,6 +2372,9 @@ function ResultView() {
       setConfirmSkillId(payload.skillId)
     })
     const offReset = window.desktopApi.onResultReset(() => {
+      stopStreamPump()
+      streamTargetRef.current = null
+      streamShownRef.current = { runId: '', answerMarkdown: '' }
       if (window.desktopApi.rendererLog) window.desktopApi.rendererLog('[RenderTiming] result:reset prevRunId=' + runIdRef.current); console.log('[RenderTiming] result:reset prevRunId=' + runIdRef.current);
       if (renderTiming.current.timer) { clearInterval(renderTiming.current.timer); renderTiming.current.timer = null; }
       runIdRef.current = ''
@@ -1977,6 +2383,7 @@ function ResultView() {
       setFooterMoreOpen(false)
     })
     return () => {
+      stopStreamPump()
       offReady()
       offUpdate()
       offConfirm()
@@ -2003,11 +2410,28 @@ function ResultView() {
   }
   const exportObsidian = async () => {
     try {
-      const result = await saveRecordToActiveObsidian(record)
+      const templateId = resultTemplateId || resultTemplates[0]?.id
+      if (!templateId) throw new Error('没有可用的 Obsidian 模板')
+      const result = await window.desktopApi.saveToObsidianNote(templateId, record.id, record)
       setStatus(`已保存：${result.path}`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     }
+  }
+  const toggleTemplateMenu = async () => {
+    if (footerMoreOpen) {
+      setFooterMoreOpen(false)
+      return
+    }
+    const data = await window.desktopApi.getInitialData()
+    const templates = data.obsidianTemplates || []
+    setResultTemplates(templates)
+    setResultTemplateId((current) => {
+      if (templates.some((item) => item.id === current)) return current
+      const preferred = data.settings.obsidian.activeTemplateId
+      return templates.some((item) => item.id === preferred) ? (preferred || '') : (templates[0]?.id || '')
+    })
+    setFooterMoreOpen(true)
   }
   const startResultDrag = async (event: ReactMouseEvent) => {
     const target = event.target as HTMLElement
@@ -2047,6 +2471,7 @@ function ResultView() {
 
   return (
     <motion.div
+      className="result-card-window"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12 }}
@@ -2065,6 +2490,7 @@ function ResultView() {
       <ResultCardChrome
         cardRef={resultCardRef}
         title={`${record.skillName}`}
+        skillIconKey={normalizeIconKey(record.skillIconKey)}
         subtitle={record.model}
         status={record.status}
         sourceExpanded={sourceExpanded}
@@ -2080,15 +2506,29 @@ function ResultView() {
         onPointerDown={() => window.desktopApi.lockResultInteraction(900)}
         footer={(
           <>
-            <button onClick={copy}><span>⧉</span>复制</button>
-            <button onClick={() => void toggleDesktopSpeak(record.answerMarkdown, resultTtsKey)}><span>◖</span>{resultSpeaking ? '停止' : '朗读'}</button>
-            <button onClick={() => window.desktopApi.runSkill(record.skillId, record.selectedText)}><span>↻</span>重新生成</button>
-            <div className="result-footer-spacer" />
+            <button className="result-footer-action action-copy" aria-label="复制" onClick={copy}><SkillIcon iconKey="copy" /><span className="result-action-tooltip" role="tooltip">复制</span></button>
+            <button className="result-footer-action action-speak" aria-label={resultSpeaking ? '停止' : '朗读'} onClick={() => void toggleDesktopSpeak(record.answerMarkdown, resultTtsKey)}><SkillIcon iconKey="speaker" /><span className="result-action-tooltip" role="tooltip">{resultSpeaking ? '停止' : '朗读'}</span></button>
+            <button className="result-footer-action action-regenerate" aria-label="重新生成" onClick={() => window.desktopApi.runSkill(record.skillId, record.selectedText)}><SkillIcon iconKey="refresh" /><span className="result-action-tooltip" role="tooltip">重新生成</span></button>
+            <button className="result-footer-action result-obsidian-button action-obsidian" aria-label="Obsidian 导入" onClick={() => void exportObsidian()}><SkillIcon iconKey="obsidian" /><span className="result-action-tooltip" role="tooltip">Obsidian 导入</span></button>
             <div className="result-footer-more">
-              <button className="result-footer-more-button" onClick={() => setFooterMoreOpen((value) => !value)} aria-label="更多操作">•••</button>
+              <button className="result-footer-more-button" onClick={() => void toggleTemplateMenu()} aria-label="更多操作"><SkillIcon iconKey="more" /><span className="result-action-tooltip" role="tooltip">更多</span></button>
               {footerMoreOpen ? (
                 <div className="result-footer-menu">
-                  <button onClick={() => { setFooterMoreOpen(false); exportObsidian() }}>保存到 Obsidian</button>
+                  <div className="result-footer-menu-label">选择 Obsidian 模板</div>
+                  {resultTemplates.length > 0 ? resultTemplates.map((template) => (
+                    <button
+                      key={template.id}
+                      className={template.id === resultTemplateId ? 'active' : ''}
+                      onClick={() => {
+                        setResultTemplateId(template.id)
+                        setFooterMoreOpen(false)
+                        setStatus(`已选择模板：${template.name}`)
+                      }}
+                    >
+                      <span>{template.name}</span>
+                      {template.id === resultTemplateId ? <b>✓</b> : null}
+                    </button>
+                  )) : <div className="result-footer-menu-empty">暂无模板</div>}
                 </div>
               ) : null}
             </div>
@@ -2115,8 +2555,8 @@ function ResultView() {
           </section>
         ) : (
         <section className={record.status === 'failed' ? 'answer-box failed' : 'answer-box'}>
-          {record.pronunciationData ? <PronunciationCard data={record.pronunciationData} answer={record.answerMarkdown} status={record.status} /> : null}
-          {!record.pronunciationData && record.answerMarkdown ? <MarkdownView text={record.answerMarkdown} /> : null}
+          {record.pronunciationData ? <PronunciationCard data={record.pronunciationData} answer={record.answerMarkdown} answerFormat={record.answerFormat} status={record.status} /> : null}
+          {!record.pronunciationData && record.answerMarkdown ? <AnswerView text={record.answerMarkdown} format={record.answerFormat} variant="result" streaming={record.status === 'running'} /> : null}
           {!record.pronunciationData && !record.answerMarkdown ? <TypingDots /> : null}
         </section>
         )}
@@ -2127,14 +2567,17 @@ function ResultView() {
 
 /* ───── 发音卡片 ───── */
 
-function PronunciationCard({ data, answer, status }: { data: PronunciationData; answer: string; status: string }) {
+function PronunciationCard({ data, answer, answerFormat, status }: { data: PronunciationData; answer: string; answerFormat?: AnswerFormat; status: string }) {
   const [speakingLang, setSpeakingLang] = useState<'' | 'en-US' | 'en-GB'>('')
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
   useEffect(() => {
     return () => {
       if ('speechSynthesis' in window) window.speechSynthesis.cancel()
     }
   }, [])
+
+  useEffect(() => setDetailsOpen(false), [data.text])
 
   const handlePlay = (e: React.MouseEvent, lang: 'en-US' | 'en-GB') => {
     e.preventDefault()
@@ -2182,7 +2625,18 @@ function PronunciationCard({ data, answer, status }: { data: PronunciationData; 
           </div>
         </>
       )}
-      {answer ? <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown></div> : null}
+      {answer ? (
+        isRunning ? <AnswerView text={answer} format={answerFormat} variant="pronunciation" streaming /> : (
+          <div className={'pronunciation-details' + (detailsOpen ? ' expanded' : '')}>
+            <div className="pronunciation-details-content">
+              <AnswerView text={answer} format={answerFormat} variant="pronunciation" />
+            </div>
+            <button className="pronunciation-details-toggle" onClick={(event) => { event.stopPropagation(); setDetailsOpen((value) => !value) }}>
+              {detailsOpen ? '收起详细解析' : '查看详细解析'} <span aria-hidden="true">⌄</span>
+            </button>
+          </div>
+        )
+      ) : null}
       {isRunning && !answer ? <TypingDots /> : null}
     </div>
   )
@@ -2266,12 +2720,81 @@ function TypingDots() {
 
 function normalizeMarkdownText(text: string) {
   return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{4,}/g, '\n\n\n')
     .replace(/\\\*\\\*/g, '**')
     .replace(/＊＊/g, '**')
 }
 
-function MarkdownView({ text }: { text: string }) {
-  return <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdownText(text)}</ReactMarkdown></div>
+const resultMarkdownComponents: Components = {
+  table: ({ node: _node, children, ...props }) => (
+    <div className="result-markdown-table" role="region" aria-label="结果表格" tabIndex={0}>
+      <table {...props}>{children}</table>
+    </div>
+  ),
+}
+
+function MarkdownView({ text, variant = 'result' }: { text: string; variant?: 'result' | 'history' | 'pronunciation' }) {
+  return <div className={`markdown-body result-markdown answer-view answer-view--${variant}`}><ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>{normalizeMarkdownText(text)}</ReactMarkdown></div>
+}
+
+function AnswerView({ text, format = 'rich', variant = 'result', streaming = false }: { text: string; format?: AnswerFormat; variant?: 'result' | 'history' | 'pronunciation'; streaming?: boolean }) {
+  if (format !== 'rich') {
+    const normalized = String(text || '').replace(/\r\n?/g, '\n')
+    const codeLike = format === 'json' || format === 'code'
+    return <pre className={`answer-view answer-view--${variant} answer-plain${codeLike ? ' answer-code' : ''}`}>{normalized}{streaming ? <span className="streaming-caret" aria-hidden="true" /> : null}</pre>
+  }
+  return streaming ? <StreamingText text={text} variant={variant} /> : <MarkdownView text={text} variant={variant} />
+}
+
+function countUnescapedMarkers(text: string, marker: string) {
+  let count = 0
+  for (let index = 0; index <= text.length - marker.length; index += 1) {
+    if (text.startsWith(marker, index) && text[index - 1] !== '\\') {
+      count += 1
+      index += marker.length - 1
+    }
+  }
+  return count
+}
+
+// This is presentation-only recovery for a partial stream. It never changes
+// the saved answer; it merely gives the Markdown parser a closed construct so
+// that an unfinished code block or emphasis marker keeps its final styling.
+function makeStreamingMarkdownSafe(text: string) {
+  let markdown = normalizeMarkdownText(text)
+  const fenceCount = (markdown.match(/(^|\n)```[^\n]*/g) || []).length
+  if (fenceCount % 2 === 1) markdown += '\n```'
+
+  const prose = markdown.replace(/```[\s\S]*?```/g, '')
+  if (countUnescapedMarkers(prose, '**') % 2 === 1) markdown += '**'
+  if (countUnescapedMarkers(prose, '`') % 2 === 1) markdown += '`'
+
+  // Make a complete-looking table as soon as the assistant has emitted a
+  // pipe-delimited header. The synthetic separator exists only in this render
+  // buffer and is replaced naturally by the provider's real separator.
+  const lines = markdown.split('\n')
+  const lastIndex = lines.length - 1
+  const lastLine = lines[lastIndex]?.trim() || ''
+  const looksLikeTableHeader = lastLine.startsWith('|') && (lastLine.match(/\|/g) || []).length >= 2
+  if (looksLikeTableHeader) {
+    const header = lastLine.endsWith('|') ? lastLine : `${lastLine}|`
+    lines[lastIndex] = header
+    const cells = header.slice(1, -1).split('|').length
+    markdown = `${lines.join('\n')}\n|${Array.from({ length: cells }, () => ' --- ').join('|')}|`
+  }
+
+  return markdown
+}
+
+function StreamingText({ text, variant = 'result' }: { text: string; variant?: 'result' | 'history' | 'pronunciation' }) {
+  return (
+    <div className={`markdown-body result-markdown streaming-markdown answer-view answer-view--${variant}`}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>{makeStreamingMarkdownSafe(text)}</ReactMarkdown>
+      <span className="streaming-caret" aria-hidden="true" />
+    </div>
+  )
 }
 function normalizeIconKey(iconKey: string | undefined): string {
   return SKILL_ICON_KEYS.includes(iconKey as any) ? iconKey! : 'spark'

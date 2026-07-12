@@ -1,104 +1,178 @@
-﻿// background.js - service worker with auto-reinjection
-const VERSION = '1.2.0';
-const PING_TIMEOUT = 800;
-const SCAN_INTERVAL = 5000;
-const SKIPPED_SCHEMES = ['chrome://', 'edge://', 'brave://', 'about:', 'chrome-extension://', 'file://', 'moz-extension://'];
-const SKIPPED_HOSTS = ['chrome.google.com', 'chromewebstore.google.com'];
+// background.js - MV3 service worker with Edge/Chrome recovery
+const VERSION = '1.3.0';
+const PING_TIMEOUT_MS = 800;
+const ALARM_NAME = 'aisel-scan-tabs';
+const ALARM_PERIOD_MINUTES = 1;
+
+const SKIPPED_SCHEMES = [
+  'chrome://',
+  'edge://',
+  'brave://',
+  'about:',
+  'chrome-extension://',
+  'edge-extension://',
+  'file://',
+  'moz-extension://',
+];
+const SKIPPED_HOSTS = [
+  'chrome.google.com',
+  'chromewebstore.google.com',
+  'microsoftedge.microsoft.com',
+];
 
 const aliveTabs = new Map();
 
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('[AISel-BG] v' + VERSION);
-  setInterval(scanAllTabs, SCAN_INTERVAL);
-});
+function isInjectableUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  if (SKIPPED_SCHEMES.some((scheme) => url.startsWith(scheme))) return false;
 
-function getContentScriptSource() {
-  return fetch(chrome.runtime.getURL('content.js')).then(r => r.text()).catch(e => { console.error(e); return null; });
+  try {
+    if (SKIPPED_HOSTS.includes(new URL(url).hostname)) return false;
+  } catch (_) {
+    return false;
+  }
+
+  return url.startsWith('http://') || url.startsWith('https://');
 }
 
 async function pingTab(tabId) {
+  let timer;
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: 'AISEL_PING' });
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), PING_TIMEOUT_MS);
+    });
+    const response = await Promise.race([
+      chrome.tabs.sendMessage(tabId, { type: 'AISEL_PING' }),
+      timeout,
+    ]);
+
     if (response && response.type === 'AISEL_PONG') {
-      aliveTabs.set(tabId, { lastConfirmedAt: Date.now(), href: response.href || '' });
+      aliveTabs.set(tabId, {
+        lastConfirmedAt: Date.now(),
+        href: response.href || '',
+      });
       return true;
     }
-  } catch (e) {}
+  } catch (_) {
+    // A missing receiver is expected on tabs opened before the extension loaded.
+  } finally {
+    clearTimeout(timer);
+  }
+
   aliveTabs.delete(tabId);
   return false;
 }
 
-function isInjectableUrl(url) {
-  if (!url || typeof url !== 'string') return false;
-  for (const scheme of SKIPPED_SCHEMES) { if (url.startsWith(scheme)) return false; }
-  try { if (SKIPPED_HOSTS.includes(new URL(url).hostname)) return false; } catch (e) { return false; }
-  return url.startsWith('http://') || url.startsWith('https://');
-}
-
 async function injectTab(tabId) {
   try {
-    const src = await getContentScriptSource();
-    if (!src) return false;
+    // Inject the extension file directly into the isolated world. The previous
+    // inline <script> approach could be blocked by page CSP in Edge.
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      func: (code) => {
-        const s = document.createElement('script');
-        s.textContent = code;
-        s.id = '__aisel_content_script_loader';
-        const old = document.getElementById('__aisel_content_script_loader');
-        if (old) old.remove();
-        (document.head || document.documentElement).appendChild(s);
-        s.remove();
-      },
-      args: [src],
+      files: ['content.js'],
       world: 'ISOLATED',
     });
     return true;
-  } catch (e) {
-    if (!e.message?.includes('Cannot access') && !e.message?.includes('frame is not')) {
-      console.warn('[AISel-BG] inject fail tab', tabId, e.message);
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (
+      !message.includes('Cannot access') &&
+      !message.includes('frame is not') &&
+      !message.includes('The extensions gallery cannot be scripted')
+    ) {
+      console.warn('[AISel-BG] inject fail tab', tabId, message);
     }
     return false;
   }
 }
 
 async function ensureTabAlive(tabId, url) {
-  if (!isInjectableUrl(url)) return;
-  if (await pingTab(tabId)) return;
-  if (await injectTab(tabId)) {
-    aliveTabs.set(tabId, { lastConfirmedAt: Date.now(), href: url });
+  if (!tabId || !isInjectableUrl(url)) return false;
+  if (await pingTab(tabId)) return true;
+  if (!(await injectTab(tabId))) return false;
+
+  // executeScript resolves after injection; ping once more to verify the
+  // content script really started instead of assuming success.
+  const alive = await pingTab(tabId);
+  if (!alive) {
+    console.warn('[AISel-BG] content script did not answer after injection', tabId);
   }
+  return alive;
 }
 
 async function scanAllTabs() {
   try {
-    const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
-    for (const tab of tabs) {
-      if (tab.id && tab.url && isInjectableUrl(tab.url)) {
-        await ensureTabAlive(tab.id, tab.url);
-      }
-    }
-  } catch (e) {}
+    const tabs = await chrome.tabs.query({
+      url: ['http://*/*', 'https://*/*'],
+    });
+    await Promise.allSettled(
+      tabs
+        .filter((tab) => tab.id && tab.url && isInjectableUrl(tab.url))
+        .map((tab) => ensureTabAlive(tab.id, tab.url)),
+    );
+  } catch (error) {
+    console.warn('[AISel-BG] scan tabs failed', error?.message || error);
+  }
 }
 
-chrome.tabs.onUpdated.addListener((tabId, ci, tab) => {
-  if (tab.url && isInjectableUrl(tab.url) && ci.status === 'complete') {
-    ensureTabAlive(tabId, tab.url);
+async function ensureAlarm() {
+  try {
+    const alarm = await chrome.alarms.get(ALARM_NAME);
+    if (!alarm) {
+      chrome.alarms.create(ALARM_NAME, {
+        periodInMinutes: ALARM_PERIOD_MINUTES,
+      });
+    }
+  } catch (error) {
+    console.warn('[AISel-BG] alarm setup failed', error?.message || error);
+  }
+}
+
+async function initialize(reason) {
+  console.log(`[AISel-BG] initialize ${reason} v${VERSION}`);
+  await ensureAlarm();
+  await scanAllTabs();
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  initialize('installed').catch(() => {});
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  initialize('startup').catch(() => {});
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === ALARM_NAME) {
+    scanAllTabs().catch(() => {});
   }
 });
 
-chrome.tabs.onActivated.addListener((ai) => {
-  chrome.tabs.get(ai.tabId, (tab) => {
-    if (!chrome.runtime.lastError && tab.url && isInjectableUrl(tab.url)) {
-      ensureTabAlive(ai.tabId, tab.url);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' && tab.url && isInjectableUrl(tab.url)) {
+    ensureTabAlive(tabId, tab.url).catch(() => {});
+  }
+});
+
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.url && isInjectableUrl(tab.url)) {
+      await ensureTabAlive(tabId, tab.url);
     }
-  });
+  } catch (_) {}
 });
 
-chrome.webNavigation?.onHistoryStateUpdated?.addListener((d) => {
-  if (d.frameId === 0 && isInjectableUrl(d.url)) ensureTabAlive(d.tabId, d.url);
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (details.frameId === 0 && isInjectableUrl(details.url)) {
+    ensureTabAlive(details.tabId, details.url).catch(() => {});
+  }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => aliveTabs.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  aliveTabs.delete(tabId);
+});
 
-console.log('[AISel-BG] ready v' + VERSION);
+// Also run once whenever Edge/Chrome wakes this service worker after reload.
+initialize('worker-wakeup').catch(() => {});
+console.log(`[AISel-BG] ready v${VERSION}`);

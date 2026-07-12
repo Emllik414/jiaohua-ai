@@ -23,11 +23,14 @@ contextBridge.exposeInMainWorld('desktopApi', {
   deleteObsidianTemplate: (templateId) => ipcRenderer.invoke('obsidian:templates:delete', templateId),
   previewObsidianTemplate: (templateId, recordId, record) => ipcRenderer.invoke('obsidian:template:preview', { templateId, recordId, record }),
   saveToObsidianNote: (templateId, recordId, record) => ipcRenderer.invoke('obsidian:note:save', { templateId, recordId, record }),
+  saveManyToObsidian: (templateId, recordIds) => ipcRenderer.invoke('obsidian:notes:save-many', { templateId, recordIds }),
   listVaultNotes: () => ipcRenderer.invoke('obsidian:vault:list-notes'),
   checkVaultPath: (relativePath) => ipcRenderer.invoke('obsidian:vault:check-path', relativePath),
 
   deleteHistory: (recordIds) => ipcRenderer.invoke('history:delete', recordIds),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
+  chooseHistoryExportDirectory: () => ipcRenderer.invoke('history-export:choose-directory'),
+  exportHistory: (options) => ipcRenderer.invoke('history-export:write', options),
   speak: (text, options) => ipcRenderer.invoke('tts:speak', text, options),
   stopSpeak: () => ipcRenderer.invoke('tts:stop'),
   onTtsState: (callback) => {
@@ -38,6 +41,12 @@ contextBridge.exposeInMainWorld('desktopApi', {
   showMain: () => ipcRenderer.invoke('window:show-main'),
   closeCurrent: () => ipcRenderer.invoke('window:close-current'),
   rendererLog: (msg) => ipcRenderer.send('renderer-log', msg),
+  setAppearance: (mode) => ipcRenderer.invoke('appearance:set', mode),
+  onAppearanceChanged: (callback) => {
+    const listener = (_event, mode) => callback(mode);
+    ipcRenderer.on('appearance:changed', listener);
+    return () => ipcRenderer.removeListener('appearance:changed', listener);
+  },
   hideToolbar: () => ipcRenderer.invoke('toolbar:hide'),
   resizeToolbar: (expanded) => ipcRenderer.invoke('toolbar:resize', expanded),
   toggleToolbarMore: (anchor) => ipcRenderer.invoke('toolbar-more:toggle', anchor),

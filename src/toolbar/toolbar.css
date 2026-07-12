@@ -45,8 +45,7 @@
   border-radius: 21px;
   border: 1px solid rgba(226, 232, 240, .82);
   background: rgba(255, 255, 255, .98);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, .86);
+  box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   white-space: nowrap;
@@ -70,7 +69,7 @@
 .toolbar-layer.dragging .toolbar-shell {
   cursor: grabbing;
   transform: scale(1.02);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .86);
+  box-shadow: none;
 }
 
 .drag-handle {
@@ -249,6 +248,7 @@
 
 .more-menu-panel {
   width: 100%;
+  height: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -265,6 +265,8 @@
 
 .more-menu-list {
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
   flex-direction: column;
   gap: 1px;
   overflow-y: auto;
@@ -398,12 +400,12 @@
 .result-card-header {
   position: relative;
   flex: 0 0 auto;
-  min-height: 78px;
+  min-height: 84px;
   display: grid;
   grid-template-columns: 30px minmax(0,1fr) 38px;
   align-items: center;
   column-gap: 10px;
-  padding: 18px 14px 12px;
+  padding: 20px 14px 14px;
   border-bottom: 1px solid rgba(148,163,184,.22);
   -webkit-app-region: drag;
 }
@@ -440,7 +442,7 @@
 
 .title-block { min-width: 0; }
 .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.title { font-weight: 700; font-size: 16px; line-height: 1.25; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.title { font-weight: 720; font-size: 18px; line-height: 1.25; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ai-pill { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: 12px; line-height: 1.15; font-weight: 700; color: #7c3aed; background: #f0e7ff; }
 .model-line { margin-top: 4px; color: #64748b; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -479,11 +481,14 @@
   color: #94a3b8; font-size: 12.5px; font-weight: 700;
 }
 .copy-inline {
-  border: none; background: transparent;
-  color: #64748b; font-size: 12px; cursor: pointer; padding: 2px 0;
+  width: 26px; height: 26px; padding: 0;
+  display: grid; place-items: center;
+  border: none; border-radius: 8px; background: transparent;
+  color: #64748b; cursor: pointer;
   -webkit-app-region: no-drag;
 }
 .copy-inline:hover { color: #2563eb; }
+.copy-inline svg { width: 15px; height: 15px; }
 
 .answer {
   font-size: 16px; line-height: 1.78; color: #0f172a;
@@ -504,8 +509,8 @@
 .scroll-down-hint {
   position: absolute;
   left: 50%;
-  bottom: 62px;
-  transform: translateX(-50%) translateY(4px);
+  bottom: 10px;
+  transform: translateX(-50%) translateY(8px) scale(.72);
   width: 36px; height: 36px;
   border: 1px solid rgba(148,163,184,.28);
   border-radius: 999px;
@@ -519,12 +524,12 @@
   box-shadow: 0 8px 18px rgba(15,23,42,.14);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 160ms ease, transform 160ms ease;
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(.2,.9,.2,1.15);
   cursor: pointer;
   z-index: 10;
   -webkit-app-region: no-drag;
 }
-.scroll-down-hint.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+.scroll-down-hint.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0) scale(1); }
 .scroll-down-hint svg { width: 18px; height: 18px; display: block; }
 
 .typing-caret {
@@ -536,6 +541,107 @@
   animation: blink 900ms step-end infinite;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+#root .result-markdown {
+  overflow-wrap: anywhere;
+  color: var(--ui-text);
+  font-size: 16px;
+  line-height: 1.75;
+  text-wrap: pretty;
+}
+#root .result-markdown > :first-child { margin-top: 0; }
+#root .result-markdown > :nth-last-child(2) { margin-bottom: 0; }
+#root .result-markdown h1,
+#root .result-markdown h2,
+#root .result-markdown h3 {
+  color: var(--ui-text);
+  font-weight: 700;
+  letter-spacing: -.015em;
+}
+#root .result-markdown h1 { font-size: 20px; line-height: 1.35; margin: 18px 0 10px; }
+#root .result-markdown h2 { font-size: 18px; line-height: 1.4; margin: 16px 0 8px; }
+#root .result-markdown h3 { font-size: 16px; line-height: 1.45; margin: 14px 0 7px; }
+#root .result-markdown ul,
+#root .result-markdown ol { margin: 8px 0 12px; padding-left: 21px; }
+#root .result-markdown li { margin: 5px 0; }
+#root .result-markdown blockquote {
+  margin: 10px 0;
+  padding: 7px 11px;
+  border-left: 3px solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  color: var(--ui-muted);
+  background: color-mix(in srgb, var(--ui-accent) 7%, transparent);
+  border-radius: 0 9px 9px 0;
+}
+#root .result-markdown code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  color: var(--ui-text);
+  background: color-mix(in srgb, var(--ui-text) 8%, transparent);
+  font-size: .88em;
+}
+#root .result-markdown pre {
+  margin: 10px 0;
+  padding: 10px 11px;
+  overflow: auto;
+  scrollbar-width: none;
+  border-radius: 10px;
+  color: #e8e8ef;
+  background: rgba(10, 11, 16, .54);
+}
+#root .result-markdown pre::-webkit-scrollbar { display: none; }
+#root .result-markdown pre code { padding: 0; background: transparent; color: inherit; }
+#root .result-markdown table {
+  width: 100%;
+  margin: 10px 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  overflow: hidden;
+  border: 1px solid var(--ui-hairline);
+  border-radius: 10px;
+  font-size: 13px;
+}
+#root .result-markdown th,
+#root .result-markdown td {
+  padding: 7px 8px;
+  overflow-wrap: anywhere;
+  border-right: 1px solid var(--ui-hairline);
+  border-bottom: 1px solid var(--ui-hairline);
+  text-align: left;
+  vertical-align: top;
+}
+#root .result-markdown th:last-child,
+#root .result-markdown td:last-child { border-right: 0; }
+#root .result-markdown tr:last-child td { border-bottom: 0; }
+#root .result-markdown th { color: var(--ui-text); background: color-mix(in srgb, var(--ui-text) 6%, transparent); font-weight: 700; }
+#root .result-markdown-table {
+  width: 100%;
+  margin: 10px 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border: 1px solid var(--ui-hairline);
+  border-radius: 10px;
+  scrollbar-width: none;
+}
+#root .result-markdown-table::-webkit-scrollbar { display: none; }
+#root .result-markdown-table table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  table-layout: auto;
+}
+.streaming-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -.12em;
+  border-radius: 2px;
+  background: var(--ui-accent);
+  animation: blink 800ms step-end infinite;
+}
 
 .status-line { color: #64748b; font-size: 14px; line-height: 1.6; padding: 8px 0; }
 
@@ -552,6 +658,15 @@
   width: 34px;
   justify-content: center;
   letter-spacing: 1px;
+}
+
+.result-obsidian-button {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0 8px !important;
+  font-size: 11px !important;
+  letter-spacing: -.01em;
+  white-space: nowrap;
 }
 
 .result-footer-menu {
@@ -621,6 +736,84 @@
   line-height: 1.75;
 }
 
+/* ===== Floating windows: shared appearance and footer template menu ===== */
+.result-footer-menu-label,
+.result-footer-menu-empty {
+  padding: 7px 10px;
+  color: var(--ui-muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.result-footer-menu {
+  width: 220px;
+  height: 150px;
+  min-width: 220px;
+  max-height: 150px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.result-footer-menu::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.result-footer-menu button { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; }
+.result-footer-menu button.active { color: var(--ui-accent); background: var(--ui-accent-hover); }
+.result-card-footer { flex-wrap: nowrap; gap: 5px; min-width: 0; }
+
+:root[data-appearance='dark'] .toolbar-layer,
+:root[data-appearance='dark'] .more-menu-layer,
+:root[data-appearance='dark'] .result-card-v2 {
+  --ui-accent: #a89cff;
+  --ui-accent-soft: rgba(168,156,255,.18);
+  --ui-accent-hover: rgba(168,156,255,.12);
+  --ui-text: #f0f0f5;
+  --ui-muted: #b1b2be;
+  --ui-border: #444550;
+  --ui-hairline: rgba(255,255,255,.09);
+  --ui-surface: #292a34;
+  --ui-soft: #23242d;
+  --ui-hover: rgba(255,255,255,.07);
+  --ui-shadow: 0 18px 48px rgba(0,0,0,.42);
+}
+:root[data-appearance='dark'] .toolbar-shell,
+:root[data-appearance='dark'] .more-menu-panel,
+:root[data-appearance='dark'] .result-card,
+:root[data-appearance='dark'] .result-card-footer,
+:root[data-appearance='dark'] .result-footer-menu {
+  color: var(--ui-text);
+  border-color: var(--ui-border);
+  background: rgba(41,42,52,.985);
+  box-shadow: none;
+}
+:root[data-appearance='dark'] .tool-btn,
+:root[data-appearance='dark'] .drag-handle,
+:root[data-appearance='dark'] .more-menu-item,
+:root[data-appearance='dark'] .result-card-footer button,
+:root[data-appearance='dark'] .result-footer-menu button { color: #e4e4ec; }
+:root[data-appearance='dark'] .tool-btn:hover,
+:root[data-appearance='dark'] .tool-btn.active,
+:root[data-appearance='dark'] .more-menu-item:hover:not(:disabled),
+:root[data-appearance='dark'] .result-card-footer button:hover { color: #c7c0ff; background: rgba(168,156,255,.12); }
+:root[data-appearance='dark'] .title,
+:root[data-appearance='dark'] .answer,
+:root[data-appearance='dark'] .markdown-body,
+:root[data-appearance='dark'] .source-text { color: var(--ui-text); }
+:root[data-appearance='dark'] .model-line,
+:root[data-appearance='dark'] .source-quote,
+:root[data-appearance='dark'] .source-head,
+:root[data-appearance='dark'] .copy-inline,
+:root[data-appearance='dark'] .status-line,
+:root[data-appearance='dark'] .more-menu-badge { color: var(--ui-muted); }
+:root[data-appearance='dark'] .close-btn,
+:root[data-appearance='dark'] .scroll-down-hint { color: #d6d6df; border-color: var(--ui-border); background: #33343f; }
+:root[data-appearance='dark'] .ai-pill { color: #d1caff; background: rgba(168,156,255,.18); }
+:root[data-appearance='dark'] .result-card-header,
+:root[data-appearance='dark'] .result-card-footer { border-color: var(--ui-hairline); }
+
+:root[data-appearance='dark'] .result-obsidian-button { color: #d8d3ff; }
+
+html, body, #root { overflow: hidden !important; }
+.toolbar-layer, .more-menu-layer, .result-card-v2 { max-width: 100vw; max-height: 100vh; }
+
 .markdown-body p {
   margin: 12px 0;
 }
@@ -634,6 +827,166 @@
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* Native transparent windows must not paint a rectangular shadow behind the
+   toolbar or its command menu. Keep the result card's own elevation intact. */
+.toolbar-layer,
+.toolbar-shell,
+.more-menu-layer,
+.more-menu-panel {
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+/* The template picker opens above the footer and must not be clipped by the
+   rounded card container. */
+.result-card { overflow: visible; }
+.result-card-footer {
+  min-width: 0;
+  overflow: visible;
+}
+.result-card-footer > button,
+.result-card-footer .result-footer-more-button {
+  flex-shrink: 1;
+  font-size: 11px;
+  padding-left: 7px;
+  padding-right: 7px;
+}
+.result-card-footer .result-footer-more {
+  margin-left: 0;
+  flex: 0 0 34px;
+}
+
+/* The scroll hint belongs to the scroll viewport, so footer height and menu
+   state can never move it onto the divider. */
+.result-card-scroll-shell {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.result-card-scroll-shell .result-card-scroll {
+  width: 100%;
+  height: 100%;
+}
+
+/* A deterministic five-column footer: copy, read, regenerate, Obsidian, more. */
+.result-card-footer {
+  display: grid;
+  grid-template-areas: "copy speak regenerate obsidian more";
+  grid-template-columns: repeat(4, minmax(0, 1fr)) 30px;
+  align-items: center;
+  column-gap: 4px;
+  min-height: 46px;
+  height: 46px;
+  padding: 6px 8px;
+  border-radius: 0 0 26px 26px;
+  white-space: nowrap;
+}
+.result-card-footer > .result-footer-action {
+  position: relative;
+  order: 0;
+  min-width: 0;
+  width: 100%;
+  overflow: visible;
+  justify-content: center;
+}
+.result-card-footer > .result-footer-action svg { width: 16px; height: 16px; display: block; }
+.result-action-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%) translateY(3px) scale(.96);
+  min-width: max-content;
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(24,24,28,.97);
+  box-shadow: 0 8px 22px rgba(0,0,0,.22);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 30;
+  transition: opacity 90ms ease, transform 120ms ease, visibility 0s linear 90ms;
+}
+.result-footer-action:hover .result-action-tooltip,
+.result-footer-action:focus-visible .result-action-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+  transition-delay: 0s;
+}
+.result-card-footer .action-copy { grid-area: copy; }
+.result-card-footer .action-speak { grid-area: speak; }
+.result-card-footer .action-regenerate { grid-area: regenerate; }
+.result-card-footer .action-obsidian { grid-area: obsidian; }
+.result-card-footer .result-footer-more {
+  order: 0;
+  grid-area: more;
+  justify-self: end;
+}
+.result-card-footer button { min-width: 0; height: 30px; padding: 0 4px; font-size: 9.5px; }
+.result-card-footer .result-footer-more-button { width: 30px; }
+.result-card-footer .result-footer-more-button {
+  position: relative;
+  overflow: visible;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  line-height: 0;
+  letter-spacing: 0;
+}
+.result-card-footer .result-footer-more-button svg { width: 16px; height: 16px; display: block; }
+.result-footer-more-button:hover .result-action-tooltip,
+.result-footer-more-button:focus-visible .result-action-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+  transition-delay: 0s;
+}
+
+/* The result BrowserWindow is a fixed-size viewport while streaming. The
+   direct motion wrapper must also fill that viewport; otherwise a percentage
+   height on .result-card resolves to auto and growing text pushes the footer
+   beyond the native window. */
+#root .result-card-window {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Header, output and footer are deliberately separate rows. Only the centre
+   row may scroll, so streaming content can never hide the action buttons. */
+#root .result-card {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) 46px;
+  overflow: visible;
+}
+#root .result-card-header { grid-row: 1; }
+#root .result-card-scroll-shell {
+  grid-row: 2;
+  min-height: 0;
+  height: auto;
+}
+#root .result-card-scroll {
+  min-height: 0;
+  height: 100%;
+  flex: none;
+  scroll-behavior: auto;
+}
+#root .result-card-footer {
+  grid-row: 3;
+  align-self: stretch;
+  height: 46px;
+  min-height: 46px;
 }
 
 

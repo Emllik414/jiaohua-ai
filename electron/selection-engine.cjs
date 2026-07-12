@@ -700,6 +700,9 @@ try {
 }
 
 
+let clipboardV2Tail = Promise.resolve();
+let clipboardV2RequestGeneration = 0;
+
 class ClipboardProviderV2 extends SelectionProvider {
   get name() { return 'clipboard-v2'; }
   get priority() { return 89; }
@@ -729,6 +732,25 @@ class ClipboardProviderV2 extends SelectionProvider {
   }
 
   async pick(context = {}) {
+    const requestGeneration = ++clipboardV2RequestGeneration;
+    const previous = clipboardV2Tail;
+    let release;
+    clipboardV2Tail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      // Do not run queued clipboard work for a selection that has already been
+      // replaced. The active helper is allowed to restore first, then only the
+      // newest waiting selection proceeds.
+      if (requestGeneration !== clipboardV2RequestGeneration) {
+        return makeInvalidClipboardV2Result('superseded_before_clipboard_capture', 0);
+      }
+      return await this._pickOwned(context);
+    } finally {
+      release();
+    }
+  }
+
+  async _pickOwned(context = {}) {
     const attemptId = context?._perfAttemptId || '';
     const startedAt = Date.now();
     console.log('[ClipboardV2] request_start', JSON.stringify({ attemptId, at: startedAt }));
@@ -905,6 +927,8 @@ class ClipboardProviderV2 extends SelectionProvider {
         sequenceAfter,
         pollTimeMs,
         durationMs: helperDuration,
+        clipboardRestored: data.restored === true,
+        restoreSkippedReason: String(data.restoreSkippedReason || ''),
         timings,
         previousTextPreview: String(previousText || '').slice(0, 80),
         sameAsPrevious,

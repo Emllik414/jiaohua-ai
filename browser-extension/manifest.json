@@ -1,16 +1,22 @@
 {
   "manifest_version": 3,
-  "name": "饺划-AI划词助手",
-  "short_name": "饺划",
-  "version": "0.1.0",
+  "name": "饺滑-AI划词助手",
+  "short_name": "饺滑",
+  "version": "0.1.2",
   "icons": {
     "16": "icon-16.png",
     "32": "icon-32.png",
     "48": "icon-48.png",
     "128": "icon-128.png"
   },
-  "description": "配合饺划桌面端使用的浏览器划词增强插件",
-  "permissions": ["storage", "scripting"],
+  "description": "配合饺滑桌面端使用的浏览器划词增强插件",
+  "permissions": [
+    "storage",
+    "scripting",
+    "tabs",
+    "webNavigation",
+    "alarms"
+  ],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {
@@ -23,5 +29,9 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "饺滑字幕设置",
+    "default_popup": "popup.html"
   }
 }

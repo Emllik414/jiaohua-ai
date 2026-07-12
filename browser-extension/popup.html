@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>饺滑字幕设置</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <div class="heading">
+        <img src="icon-32.png" alt="">
+        <div>
+          <h1>可划词字幕</h1>
+          <p>支持 YouTube 与哔哩哔哩 CC 字幕</p>
+        </div>
+      </div>
+      <label class="setting">
+        <span>
+          <strong>启用字幕转换</strong>
+          <small>关闭后恢复网站原生字幕</small>
+        </span>
+        <input id="caption-toggle" type="checkbox" role="switch">
+        <i aria-hidden="true"></i>
+      </label>
+      <p id="status" class="status" aria-live="polite"></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

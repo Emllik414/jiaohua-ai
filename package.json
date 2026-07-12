@@ -1,8 +1,8 @@
 {
   "name": "jiaohua-ai-selection-assistant",
-  "productName": "饺划-AI划词助手",
+  "productName": "饺滑-AI划词助手",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -10,14 +10,18 @@
     "dev:vite": "vite --host 127.0.0.1",
     "dev:electron": "wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "build": "tsc -b && vite build",
-    "start": "electron .",
+    "start": "npm run build && electron .",
+    "start:cached": "electron .",
     "lint": "oxlint",
+    "test:response-format": "node response_format_tests.cjs",
+    "test:ui-bugfix": "node --test ui_bugfix_tests.cjs",
     "preview": "vite preview",
     "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win"
+    "dist:win": "npm run build && electron-builder --win --publish never"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.2",
+    "docx": "^9.7.1",
     "motion": "^12.42.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -43,7 +47,7 @@
   "description": "划词即用 AI 的工具 —— 选中文本即调用 AI 翻译、解释、总结",
   "build": {
     "appId": "com.jiaohua.selection.assistant",
-    "productName": "饺划-AI划词助手",
+    "productName": "饺滑-AI划词助手",
     "directories": {
       "output": "release"
     },
@@ -84,19 +88,19 @@
           "arch": ["x64"]
         }
       ],
-      "icon": "src/assets/icon.ico"
+      "icon": "src/assets/jiao_hua_app_icon_fullset.ico"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "饺划-AI划词助手",
-      "uninstallDisplayName": "饺划-AI划词助手",
-      "installerIcon": "src/assets/installer.ico",
-      "uninstallerIcon": "src/assets/uninstaller.ico",
-      "installerHeaderIcon": "src/assets/icon.ico",
-      "artifactName": "饺划-AI划词助手 Setup ${version}.exe"
+      "shortcutName": "饺滑-AI划词助手",
+      "uninstallDisplayName": "饺滑-AI划词助手",
+      "installerIcon": "src/assets/jiao_hua_app_icon_fullset.ico",
+      "uninstallerIcon": "src/assets/jiao_hua_app_icon_fullset.ico",
+      "installerHeaderIcon": "src/assets/jiao_hua_app_icon_fullset.ico",
+      "artifactName": "饺滑-AI划词助手 Setup ${version}.exe"
     }
   }
 }
