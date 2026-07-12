@@ -1,8 +1,11 @@
 (function () {
   'use strict';
   // ????? Content script stability: version guard + AbortController ?????
-  var VERSION = '1.4.0-cjk-input-v3';
+  var VERSION = '1.5.0-selectable-youtube-captions';
   if (window.__AISEL_BOOTSTRAPPED__ === VERSION) return;
+  if (typeof window.__AISEL_CLEANUP__ === 'function') {
+    try { window.__AISEL_CLEANUP__(); } catch (_) {}
+  }
   window.__AISEL_BOOTSTRAPPED__ = VERSION;
   var ac = new AbortController();
   var signal = ac.signal;
@@ -73,6 +76,11 @@
 
   document.addEventListener('mouseup', (event) => {
     if (!mouseDown) return;
+    const eventTarget = asElement(event.target);
+    if (eventTarget && eventTarget.closest('.jiaohua-caption-drag-handle')) {
+      mouseDown = null;
+      return;
+    }
     const dx = Math.abs(event.clientX - mouseDown.x);
     const dy = Math.abs(event.clientY - mouseDown.y);
     if (dx < 6 && dy < 6) {
@@ -1079,6 +1087,234 @@
     lastSelection = data;
     doSend(data);
   }
+
+  // YouTube's native CC window is draggable and deliberately disables normal
+  // text selection. Mirror its live text into a selectable overlay instead:
+  // the caption text keeps native browser selection while the separate handle
+  // owns moving the overlay. The native CC remains the source of truth and is
+  // only made transparent while the mirror is healthy and visible.
+  function createYouTubeSelectableCaptionController() {
+    if (!/(^|\.)youtube\.com$/i.test(location.hostname)) return null;
+
+    const STYLE_ID = 'jiaohua-selectable-caption-style';
+    const OVERLAY_ID = 'jiaohua-selectable-caption-overlay';
+    const ACTIVE_CLASS = 'jiaohua-selectable-caption-active';
+    let overlay = null;
+    let textElement = null;
+    let player = null;
+    let observer = null;
+    let resizeObserver = null;
+    let syncQueued = false;
+    let userMoved = false;
+    let disposed = false;
+
+    document.getElementById(OVERLAY_ID)?.remove();
+    document.getElementById(STYLE_ID)?.remove();
+    document.documentElement.classList.remove(ACTIVE_CLASS);
+
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      html.${ACTIVE_CLASS} .html5-video-player .ytp-caption-window-container {
+        opacity: 0 !important;
+      }
+      #${OVERLAY_ID} {
+        position: absolute;
+        z-index: 35;
+        display: none;
+        max-width: min(86%, 1100px);
+        transform: translateX(-50%);
+        pointer-events: none;
+        text-align: center;
+        font-family: Arial, Helvetica, sans-serif;
+        line-height: 1.32;
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .9));
+      }
+      #${OVERLAY_ID} .jiaohua-caption-drag-handle {
+        display: flex;
+        width: 42px;
+        height: 25px;
+        margin: 0 auto 7px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 14px;
+        background: rgba(20, 20, 20, .88);
+        color: #fff;
+        cursor: grab;
+        pointer-events: auto;
+        user-select: none;
+        -webkit-user-select: none;
+        touch-action: none;
+        font-size: 15px;
+        letter-spacing: 2px;
+      }
+      #${OVERLAY_ID} .jiaohua-caption-drag-handle:active { cursor: grabbing; }
+      #${OVERLAY_ID} .jiaohua-caption-text {
+        display: inline;
+        padding: .16em .34em .2em;
+        border-radius: .22em;
+        background: rgba(8, 8, 8, .82);
+        color: #fff;
+        cursor: text;
+        pointer-events: auto;
+        user-select: text !important;
+        -webkit-user-select: text !important;
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+      }
+      #${OVERLAY_ID} .jiaohua-caption-text::selection {
+        background: #2f7cf6;
+        color: #fff;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+
+    function nativeCaptionState() {
+      const windows = Array.from(document.querySelectorAll('.ytp-caption-window-container'))
+        .filter((node) => node.id !== OVERLAY_ID && node.getClientRects().length > 0);
+      const segments = windows.flatMap((node) => Array.from(node.querySelectorAll('.ytp-caption-segment')))
+        .filter((node) => node.getClientRects().length > 0);
+      const text = normalizeText(segments.map((node) => node.textContent || '').join(' '));
+      const anchor = windows[0] || segments[0] || null;
+      return { text, anchor };
+    }
+
+    function ensureOverlay(nextPlayer) {
+      if (overlay && player === nextPlayer && overlay.isConnected) return;
+      overlay?.remove();
+      resizeObserver?.disconnect();
+      player = nextPlayer;
+      userMoved = false;
+
+      overlay = document.createElement('div');
+      overlay.id = OVERLAY_ID;
+      overlay.setAttribute('role', 'region');
+      overlay.setAttribute('aria-label', '饺滑可划词字幕');
+      const handle = document.createElement('div');
+      handle.className = 'jiaohua-caption-drag-handle';
+      handle.title = '拖动字幕';
+      handle.setAttribute('aria-label', '拖动字幕');
+      handle.textContent = '⠿';
+      textElement = document.createElement('span');
+      textElement.className = 'jiaohua-caption-text';
+      overlay.append(handle, textElement);
+      player.appendChild(overlay);
+      installDragHandle(handle);
+
+      resizeObserver = new ResizeObserver(() => {
+        if (!userMoved) queueSync();
+        else clampOverlayToPlayer();
+      });
+      resizeObserver.observe(player);
+    }
+
+    function installDragHandle(handle) {
+      handle.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || !overlay || !player) return;
+        event.preventDefault();
+        event.stopPropagation();
+        userMoved = true;
+        const playerRect = player.getBoundingClientRect();
+        const overlayRect = overlay.getBoundingClientRect();
+        const offsetX = event.clientX - overlayRect.left;
+        const offsetY = event.clientY - overlayRect.top;
+        handle.setPointerCapture(event.pointerId);
+
+        const move = (moveEvent) => {
+          moveEvent.preventDefault();
+          const halfWidth = overlayRect.width / 2;
+          const nextCenterX = moveEvent.clientX - playerRect.left - offsetX + halfWidth;
+          const nextTop = moveEvent.clientY - playerRect.top - offsetY;
+          setOverlayPosition(nextCenterX, nextTop);
+        };
+        const finish = () => {
+          handle.removeEventListener('pointermove', move);
+          handle.removeEventListener('pointerup', finish);
+          handle.removeEventListener('pointercancel', finish);
+        };
+        handle.addEventListener('pointermove', move);
+        handle.addEventListener('pointerup', finish);
+        handle.addEventListener('pointercancel', finish);
+      });
+    }
+
+    function setOverlayPosition(centerX, top) {
+      if (!overlay || !player) return;
+      const maxX = Math.max(24, player.clientWidth - 24);
+      const maxTop = Math.max(0, player.clientHeight - overlay.offsetHeight);
+      overlay.style.left = `${Math.max(24, Math.min(maxX, centerX))}px`;
+      overlay.style.top = `${Math.max(0, Math.min(maxTop, top))}px`;
+      overlay.style.bottom = 'auto';
+    }
+
+    function clampOverlayToPlayer() {
+      if (!overlay || !player) return;
+      const rect = overlay.getBoundingClientRect();
+      const playerRect = player.getBoundingClientRect();
+      setOverlayPosition(
+        rect.left - playerRect.left + rect.width / 2,
+        rect.top - playerRect.top,
+      );
+    }
+
+    function positionFromNative(anchor) {
+      if (!overlay || !player || !anchor || userMoved) return;
+      const nativeRect = anchor.getBoundingClientRect();
+      const playerRect = player.getBoundingClientRect();
+      setOverlayPosition(
+        nativeRect.left - playerRect.left + nativeRect.width / 2,
+        Math.max(12, nativeRect.top - playerRect.top - 32),
+      );
+    }
+
+    function sync() {
+      syncQueued = false;
+      if (disposed) return;
+      const nextPlayer = document.querySelector('.html5-video-player');
+      const state = nativeCaptionState();
+      if (!nextPlayer || !state.text || !state.anchor) {
+        if (overlay) overlay.style.display = 'none';
+        document.documentElement.classList.remove(ACTIVE_CLASS);
+        return;
+      }
+
+      ensureOverlay(nextPlayer);
+      if (textElement.textContent !== state.text) textElement.textContent = state.text;
+      const nativeStyle = getComputedStyle(state.anchor.querySelector('.ytp-caption-segment') || state.anchor);
+      const nativeSize = Number.parseFloat(nativeStyle.fontSize);
+      overlay.style.fontSize = `${Number.isFinite(nativeSize) ? Math.max(16, nativeSize) : Math.max(18, player.clientHeight * .045)}px`;
+      overlay.style.display = 'block';
+      positionFromNative(state.anchor);
+      document.documentElement.classList.add(ACTIVE_CLASS);
+    }
+
+    function queueSync() {
+      if (syncQueued || disposed) return;
+      syncQueued = true;
+      requestAnimationFrame(sync);
+    }
+
+    observer = new MutationObserver(queueSync);
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    window.addEventListener('resize', queueSync, { signal });
+    document.addEventListener('fullscreenchange', queueSync, { signal });
+    queueSync();
+
+    return function cleanup() {
+      disposed = true;
+      observer?.disconnect();
+      resizeObserver?.disconnect();
+      overlay?.remove();
+      style.remove();
+      document.documentElement.classList.remove(ACTIVE_CLASS);
+    };
+  }
+
+  const cleanupSelectableCaptions = createYouTubeSelectableCaptionController();
+  window.__AISEL_CLEANUP__ = function () {
+    try { ac.abort(); } catch (_) {}
+    try { cleanupSelectableCaptions?.(); } catch (_) {}
+  };
 
   function doSend(data, attempt) {
     if (typeof attempt === 'undefined') attempt = 0;

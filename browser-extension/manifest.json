@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "饺滑-AI划词助手",
   "short_name": "饺滑",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "icons": {
     "16": "icon-16.png",
     "32": "icon-32.png",
