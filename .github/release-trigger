@@ -1,3 +1,4 @@
 V1.0.0
-2026-07-13
+2026-07-13 retry 2
 Include portable EXE, browser extension ZIP, SHA-256 checksums, and first-run browser extension onboarding.
+Use GitHub API to create or move the release tag.
