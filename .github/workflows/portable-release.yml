@@ -2,7 +2,19 @@ name: Windows portable release
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag; leave blank to use package.json version
+        required: false
+        default: ""
+      replace_existing:
+        description: Replace an existing release and tag with the same name
+        required: true
+        type: boolean
+        default: true
   push:
+    branches:
+      - master
     tags:
       - "v*"
 
@@ -11,26 +23,53 @@ permissions:
 
 jobs:
   release:
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/') ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.ref == 'refs/heads/master' && contains(github.event.head_commit.message, '[republish-release]'))
+      }}
     runs-on: windows-latest
     env:
       WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
       WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
 
-      - name: Verify tag matches package version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Resolve release tag
         shell: pwsh
         run: |
           $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          if ($env:GITHUB_REF_NAME -ne "v$packageVersion") {
-            throw "Tag $env:GITHUB_REF_NAME does not match package version v$packageVersion"
+          $replaceExisting = 'false'
+
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $releaseTag = $env:GITHUB_REF_NAME
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $eventPayload = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+            $releaseTag = [string]$eventPayload.inputs.release_tag
+            if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+              $releaseTag = "v$packageVersion"
+            }
+            $replaceExisting = ([string]$eventPayload.inputs.replace_existing).ToLowerInvariant()
+          } else {
+            $releaseTag = "v$packageVersion"
+            $replaceExisting = 'true'
           }
+
+          if ($releaseTag -ne "v$packageVersion") {
+            throw "Release tag $releaseTag does not match package version v$packageVersion"
+          }
+
+          "PACKAGE_VERSION=$packageVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_TAG=$releaseTag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "REPLACE_EXISTING=$replaceExisting" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install dependencies
         run: npm ci
@@ -64,6 +103,11 @@ jobs:
             throw 'Sensitive local configuration was found in the package.'
           }
 
+          $packagedExtensionManifest = 'release/win-unpacked/resources/browser-extension/manifest.json'
+          if (-not (Test-Path $packagedExtensionManifest)) {
+            throw 'Browser extension was not included in the packaged application.'
+          }
+
           $portable = Get-ChildItem release -File -Filter '*.exe' |
             Where-Object { $_.Name -notlike '*Setup*' -and $_.Name -notlike '*uninstaller*' } |
             Select-Object -First 1
@@ -71,35 +115,103 @@ jobs:
             throw 'Portable executable was not produced.'
           }
 
-          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $portableName = "JiaoHua-AI-Portable-v$packageVersion.exe"
-          Rename-Item -LiteralPath $portable.FullName -NewName $portableName
-          Get-FileHash (Join-Path release $portableName) -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash)  $portableName" } |
-            Set-Content release/SHA256SUMS.txt
+          $portableName = "JiaoHua-AI-Portable-v$env:PACKAGE_VERSION.exe"
+          $portablePath = Join-Path release $portableName
+          if ($portable.Name -ne $portableName) {
+            if (Test-Path $portablePath) { Remove-Item $portablePath -Force }
+            Rename-Item -LiteralPath $portable.FullName -NewName $portableName
+          }
 
-      - name: Upload validated portable artifact
+          $extensionFolderName = "JiaoHua-Browser-Extension-v$env:PACKAGE_VERSION"
+          $extensionStage = Join-Path release $extensionFolderName
+          $extensionZip = Join-Path release "$extensionFolderName.zip"
+          if (Test-Path $extensionStage) { Remove-Item $extensionStage -Recurse -Force }
+          if (Test-Path $extensionZip) { Remove-Item $extensionZip -Force }
+          New-Item -ItemType Directory -Path $extensionStage | Out-Null
+          Copy-Item -Path 'browser-extension/*' -Destination $extensionStage -Recurse -Force
+          Compress-Archive -Path $extensionStage -DestinationPath $extensionZip -CompressionLevel Optimal
+          Remove-Item $extensionStage -Recurse -Force
+
+          $checksumAssets = @($portablePath, $extensionZip)
+          $checksumLines = foreach ($asset in $checksumAssets) {
+            $hash = Get-FileHash $asset -Algorithm SHA256
+            "$($hash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($asset))"
+          }
+          $checksumLines | Set-Content release/SHA256SUMS.txt -Encoding utf8
+
+          @"
+          ## 饺滑 AI 划词助手 V$env:PACKAGE_VERSION
+
+          ### 下载文件
+          - `JiaoHua-AI-Portable-v$env:PACKAGE_VERSION.exe`：Windows 免安装版
+          - `JiaoHua-Browser-Extension-v$env:PACKAGE_VERSION.zip`：Edge / Chrome 浏览器插件
+          - `SHA256SUMS.txt`：文件完整性校验
+
+          ### 浏览器插件安装
+          新用户首次启动桌面端时，软件会自动把插件复制到稳定目录，并弹出安装引导。点击“立即安装”后，软件会打开浏览器扩展管理页和插件目录。
+
+          也可以手动解压浏览器插件 ZIP：
+          1. Edge 打开 `edge://extensions/`，Chrome 打开 `chrome://extensions/`。
+          2. 开启开发人员模式。
+          3. 点击“加载解压缩的扩展”。
+          4. 选择直接包含 `manifest.json` 的插件文件夹。
+          5. 保持桌面端运行并刷新普通网页后测试划词。
+
+          ### 注意事项
+          - 这是免安装版，不会写入传统安装目录。
+          - 浏览器插件不能由普通 EXE 静默安装，需要用户在浏览器中确认加载。
+          - `edge://`、`chrome://` 和浏览器扩展商店等受保护页面不能运行普通扩展。
+          - 发布包不包含任何用户 API Key、历史记录或本地配置。
+          "@ | Set-Content release/RELEASE_NOTES.md -Encoding utf8
+
+      - name: Upload validated release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: jiaohua-ai-portable-${{ github.sha }}
+          name: jiaohua-ai-release-${{ github.sha }}
           path: |
             release/JiaoHua-AI-Portable-*.exe
+            release/JiaoHua-Browser-Extension-*.zip
             release/SHA256SUMS.txt
+            release/RELEASE_NOTES.md
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Replace existing V1.0.0 release ref
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.REPLACE_EXISTING == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          $portable = Get-ChildItem release -File -Filter 'JiaoHua-AI-Portable-*.exe' |
-            Select-Object -First 1
-          gh release create $env:GITHUB_REF_NAME `
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete $env:RELEASE_TAG --yes
+          }
+
+          git ls-remote --exit-code --tags origin "refs/tags/$env:RELEASE_TAG" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            git push origin ":refs/tags/$env:RELEASE_TAG"
+          }
+
+          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
+          git push origin "refs/tags/$env:RELEASE_TAG" --force
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete $env:RELEASE_TAG --yes
+          }
+
+          $portable = Get-ChildItem release -File -Filter 'JiaoHua-AI-Portable-*.exe' | Select-Object -First 1
+          $extension = Get-ChildItem release -File -Filter 'JiaoHua-Browser-Extension-*.zip' | Select-Object -First 1
+          gh release create $env:RELEASE_TAG `
             $portable.FullName `
+            $extension.FullName `
             release/SHA256SUMS.txt `
             --verify-tag `
             --latest `
-            --generate-notes `
-            --title "饺滑 AI 划词助手 $env:GITHUB_REF_NAME"
+            --notes-file release/RELEASE_NOTES.md `
+            --title "饺滑 AI 划词助手 V$env:PACKAGE_VERSION"
