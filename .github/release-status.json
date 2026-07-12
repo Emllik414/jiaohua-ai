@@ -1,0 +1,13 @@
+{
+  "verified": true,
+  "checkedAtUtc": "2026-07-12T17:56:26.9207336Z",
+  "tag": "v1.0.0",
+  "name": "饺滑 AI 划词助手 V1.0.0",
+  "url": "https://github.com/Emllik414/jiaohua-ai/releases/tag/v1.0.0",
+  "assets": [
+    "JiaoHua-AI-Portable-v1.0.0.exe",
+    "JiaoHua-Browser-Extension-v1.0.0.zip",
+    "SHA256SUMS.txt"
+  ],
+  "sourceCommit": "0be612c4da851ae5a884478261b9b31f4e37b17e"
+}
