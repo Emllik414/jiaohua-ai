@@ -65,11 +65,15 @@ async function pingTab(tabId) {
 
 async function injectTab(tabId) {
   try {
-    // Inject the extension file directly into the isolated world. The previous
+    // Inject the extension files directly into the isolated world. The previous
     // inline <script> approach could be blocked by page CSP in Edge.
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      files: ['content.js'],
+      files: [
+        'native-cc-segmentation.js',
+        'content.js',
+        'caption-layout-controller.js',
+      ],
       world: 'ISOLATED',
     });
     return true;
