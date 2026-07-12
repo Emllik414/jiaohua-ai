@@ -1,0 +1,62 @@
+name: Verify published release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/release-verify-trigger"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify V1.0.0 release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          $release = gh release view $tag --json tagName,name,url,isDraft,isPrerelease,assets | ConvertFrom-Json
+          $assetNames = @($release.assets | ForEach-Object { $_.name })
+          $expectedAssets = @(
+            "JiaoHua-AI-Portable-v$version.exe",
+            "JiaoHua-Browser-Extension-v$version.zip",
+            "SHA256SUMS.txt"
+          )
+          $missing = @($expectedAssets | Where-Object { $_ -notin $assetNames })
+          if ($release.isDraft -or $release.isPrerelease) {
+            throw 'The V1.0.0 release is not a final public release.'
+          }
+          if ($missing.Count -gt 0) {
+            throw "Missing release assets: $($missing -join ', ')"
+          }
+
+          $status = [ordered]@{
+            verified = $true
+            checkedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            tag = $release.tagName
+            name = $release.name
+            url = $release.url
+            assets = $assetNames
+            sourceCommit = $env:GITHUB_SHA
+          }
+          $status | ConvertTo-Json -Depth 6 | Set-Content .github/release-status.json -Encoding utf8
+
+      - name: Save verification result
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/release-status.json
+          git commit -m "verify V1.0.0 release assets"
+          git push origin HEAD:master
