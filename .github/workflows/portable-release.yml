@@ -1,0 +1,105 @@
+name: Windows portable release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$packageVersion") {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version v$packageVersion"
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          Get-ChildItem -File -Filter '*tests.cjs' | ForEach-Object {
+            node --test $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build portable Windows executable
+        shell: pwsh
+        run: |
+          npm run build
+          npx electron-builder --win portable --x64 --publish never
+
+      - name: Audit package and prepare release assets
+        shell: pwsh
+        run: |
+          $asarPath = 'release/win-unpacked/resources/app.asar'
+          if (-not (Test-Path $asarPath)) {
+            throw 'Packaged app.asar was not produced.'
+          }
+
+          $sensitiveEntries = npx --no-install asar list $asarPath |
+            Select-String -Pattern '(^|[\\/])(provider-config\.json|store\.json|hotkey-config\.json|\.env($|\.))' -CaseSensitive:$false
+          if ($sensitiveEntries) {
+            $sensitiveEntries | ForEach-Object { Write-Error "Sensitive package entry: $_" }
+            throw 'Sensitive local configuration was found in the package.'
+          }
+
+          $portable = Get-ChildItem release -File -Filter '*.exe' |
+            Where-Object { $_.Name -notlike '*Setup*' -and $_.Name -notlike '*uninstaller*' } |
+            Select-Object -First 1
+          if (-not $portable) {
+            throw 'Portable executable was not produced.'
+          }
+
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $portableName = "JiaoHua-AI-Portable-v$packageVersion.exe"
+          Rename-Item -LiteralPath $portable.FullName -NewName $portableName
+          Get-FileHash (Join-Path release $portableName) -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $portableName" } |
+            Set-Content release/SHA256SUMS.txt
+
+      - name: Upload validated portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jiaohua-ai-portable-${{ github.sha }}
+          path: |
+            release/JiaoHua-AI-Portable-*.exe
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $portable = Get-ChildItem release -File -Filter 'JiaoHua-AI-Portable-*.exe' |
+            Select-Object -First 1
+          gh release create $env:GITHUB_REF_NAME `
+            $portable.FullName `
+            release/SHA256SUMS.txt `
+            --verify-tag `
+            --latest `
+            --generate-notes `
+            --title "饺滑 AI 划词助手 $env:GITHUB_REF_NAME"
