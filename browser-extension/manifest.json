@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "饺滑-AI划词助手",
   "short_name": "饺滑",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "icons": {
     "16": "icon-16.png",
     "32": "icon-32.png",
@@ -25,7 +25,8 @@
         "native-cc-segmentation.js",
         "content.js",
         "caption-layout-controller.js",
-        "native-cc-word-highlight.js"
+        "native-cc-word-highlight.js",
+        "native-cc-timed-fallback.js"
       ],
       "run_at": "document_end",
       "all_frames": true,
