@@ -5,11 +5,11 @@
 **划词、对话、整理、导出，一站式桌面 AI 效率助手**
 
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?logo=windows)](https://github.com/Emllik414/jiaohua-ai/releases)
-[![Beta](https://img.shields.io/badge/版本-v0.1.0%20Beta-8B5CF6)](https://github.com/Emllik414/jiaohua-ai/releases)
+[![Version](https://img.shields.io/badge/版本-V1.0.0-8B5CF6)](https://github.com/Emllik414/jiaohua-ai/releases/tag/v1.0.0)
 [![Electron](https://img.shields.io/badge/Electron-桌面端-47848F?logo=electron)](https://www.electronjs.org/)
 [![License](https://img.shields.io/badge/许可-专有软件-red)](#版权与使用限制)
 
-[下载 Windows 测试版](https://github.com/Emllik414/jiaohua-ai/releases)
+[下载 Windows 免安装版](https://github.com/Emllik414/jiaohua-ai/releases/tag/v1.0.0)
 
 </div>
 
@@ -21,7 +21,7 @@
 
 软件会自动保留每一次划词与对话，方便用户搜索、回看、展开、整理和删除历史记录。对话结果既可以直接导入 Obsidian，也支持导入本地文件，并可导出为 TXT、Markdown（MD）和 Word（DOCX）等常用格式，让零散信息持续沉淀为个人知识库。
 
-饺滑支持自定义技能名称、图标、系统提示词和划词提示词。用户可以根据翻译、学习、写作、总结或办公需求建立自己的工作流，并按需配置兼容的 API 服务商和模型，无需被单一平台绑定。官方安装包不内置用户的真实 API Key，密钥由用户自行填写和管理。
+饺滑支持自定义技能名称、图标、系统提示词和划词提示词。用户可以根据翻译、学习、写作、总结或办公需求建立自己的工作流，并按需配置兼容的 API 服务商和模型，无需被单一平台绑定。官方发布包不内置用户的真实 API Key，密钥由用户自行填写和管理。
 
 ## 核心亮点
 
@@ -47,13 +47,14 @@
 
 ## 安装与使用
 
-1. 前往 [Releases](https://github.com/Emllik414/jiaohua-ai/releases) 下载 `饺滑-AI划词助手 Setup 0.1.0.exe`。
-2. 安装并启动饺滑，在“API 设置”中填写自己的服务商配置和 API Key。
-3. 在 Edge 地址栏打开 `edge://extensions`，启用“开发人员模式”。
-4. 点击“加载解压缩的扩展”，选择软件安装目录中的 `resources/browser-extension`。
-5. 刷新普通网页，划选文字进行测试。
+1. 前往 [V1.0.0 Release](https://github.com/Emllik414/jiaohua-ai/releases/tag/v1.0.0) 下载 `JiaoHua-AI-Portable-v1.0.0.exe`。
+2. 直接运行免安装版，在“API 设置”中填写自己的服务商配置和 API Key。
+3. 新用户首次启动时，软件会自动导出浏览器插件并弹出安装引导。
+4. 点击“立即安装”，按提示在 Edge 或 Chrome 的扩展管理页中选择软件打开的插件目录。
+5. 也可以下载 `JiaoHua-Browser-Extension-v1.0.0.zip`，解压后手动“加载解压缩的扩展”。
+6. 刷新普通网页，划选文字进行测试。
 
-> 当前为 Beta 测试版本，安装包尚未进行代码签名，Windows 可能显示“未知发布者”。`edge://`、浏览器扩展商店等受保护页面无法运行普通扩展。
+> 浏览器安全机制不允许普通 EXE 静默安装未经商店发布的扩展，因此仍需要用户在浏览器扩展管理页确认加载。`edge://`、`chrome://`、浏览器扩展商店等受保护页面无法运行普通扩展。
 
 ## 数据与隐私
 
@@ -83,6 +84,6 @@ Copyright © 2026 Bo Yan / Emllik414. All Rights Reserved.
 - 删除或更改版权、品牌及来源说明；
 - 将代码、界面、图标、截图或产品素材用于其他产品。
 
-官方发布的、未经修改的安装包仅允许个人非商业下载、安装和使用。完整条款见 [LICENSE](LICENSE)。
+官方发布的、未经修改的发行文件仅允许个人非商业下载、安装和使用。完整条款见 [LICENSE](LICENSE)。
 
 > Obsidian、Microsoft Edge、Google Chrome 及其他第三方名称和商标归各自权利人所有。本项目与这些第三方不存在官方隶属或背书关系。
