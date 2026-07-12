@@ -172,24 +172,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Replace existing V1.0.0 release ref
+      - name: Point release tag at validated commit
         if: ${{ !startsWith(github.ref, 'refs/tags/') && env.REPLACE_EXISTING == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release view $env:RELEASE_TAG *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release delete $env:RELEASE_TAG --yes
+          $tagEndpoint = "repos/$env:GITHUB_REPOSITORY/git/refs/tags/$env:RELEASE_TAG"
+          gh api --method PATCH $tagEndpoint -f sha="$env:GITHUB_SHA" -F force=true *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh api --method POST "repos/$env:GITHUB_REPOSITORY/git/refs" `
+              -f ref="refs/tags/$env:RELEASE_TAG" `
+              -f sha="$env:GITHUB_SHA"
           }
-
-          git ls-remote --exit-code --tags origin "refs/tags/$env:RELEASE_TAG" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            git push origin ":refs/tags/$env:RELEASE_TAG"
-          }
-
-          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
-          git push origin "refs/tags/$env:RELEASE_TAG" --force
 
       - name: Publish GitHub release
         env:
