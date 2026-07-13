@@ -1,5 +1,5 @@
 // background.js - MV3 service worker with Edge/Chrome recovery
-const VERSION = '1.3.3';
+const VERSION = '1.3.4';
 const PING_TIMEOUT_MS = 800;
 const ALARM_NAME = 'aisel-scan-tabs';
 const ALARM_PERIOD_MINUTES = 1;
@@ -72,10 +72,9 @@ async function injectTab(tabId) {
       files: [
         'native-cc-segmentation.js',
         'subtitle-placement-anchor.js',
+        'caption-text-stabilizer.js',
         'content.js',
         'caption-layout-controller.js',
-        'native-cc-word-highlight.js',
-        'native-cc-timed-fallback.js',
       ],
       world: 'ISOLATED',
     });
