@@ -141,8 +141,9 @@ function install() {
         registered = globalShortcut.register(shortcut.value, () => {
           void trigger(skill.id, shortcut.value);
         });
-      } catch (_) {
+      } catch (error) {
         registered = false;
+        console.error('[SkillShortcutRuntime] register-error', shortcut.value, error);
       }
       if (registered) registeredKeyboard.set(shortcut.value, skill.id);
       else console.warn('[SkillShortcutRuntime] could not register', shortcut.value, skill.id);
