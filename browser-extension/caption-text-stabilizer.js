@@ -126,7 +126,8 @@
     const remainingMax = Math.max(0, state.policy.maxWaitMs - elapsed);
     if (remainingMax === 0) return 0;
     if (endsSentence(text)) return Math.min(state.policy.completeMs, remainingMax);
-    if (isMeaningfulChunk(text) && !state.committedRaw) {
+    if (!isMeaningfulChunk(text)) return remainingMax;
+    if (!state.committedRaw) {
       return Math.min(Math.max(90, Math.floor(state.policy.debounceMs * 0.65)), remainingMax);
     }
     return Math.min(state.policy.debounceMs, remainingMax);
