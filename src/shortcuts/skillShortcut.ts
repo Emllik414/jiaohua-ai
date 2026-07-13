@@ -1,3 +1,9 @@
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  WheelEvent as ReactWheelEvent,
+} from 'react'
+
 export type SkillShortcutKind = 'keyboard' | 'mouse'
 
 export type SkillShortcut = {
@@ -7,7 +13,9 @@ export type SkillShortcut = {
 
 const MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Meta'] as const
 
-function modifiersFromEvent(event: Pick<KeyboardEvent | WheelEvent | MouseEvent, 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>) {
+type ModifierEvent = Pick<KeyboardEvent | WheelEvent | MouseEvent, 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>
+
+function modifiersFromEvent(event: ModifierEvent) {
   const parts: string[] = []
   if (event.ctrlKey) parts.push('Ctrl')
   if (event.altKey) parts.push('Alt')
@@ -16,8 +24,9 @@ function modifiersFromEvent(event: Pick<KeyboardEvent | WheelEvent | MouseEvent,
   return parts
 }
 
-export function captureKeyboardShortcut(event: KeyboardEvent | React.KeyboardEvent): SkillShortcut {
-  const modifiers = modifiersFromEvent(event.nativeEvent ? event.nativeEvent : event)
+export function captureKeyboardShortcut(event: KeyboardEvent | ReactKeyboardEvent): SkillShortcut {
+  const native = 'nativeEvent' in event ? event.nativeEvent : event
+  const modifiers = modifiersFromEvent(native)
   const rawKey = event.key
   const key = /^[a-z0-9]$/i.test(rawKey)
     ? rawKey.toUpperCase()
@@ -30,16 +39,16 @@ export function captureKeyboardShortcut(event: KeyboardEvent | React.KeyboardEve
   return { kind: 'keyboard', value: [...modifiers, key].join('+') }
 }
 
-export function captureWheelShortcut(event: WheelEvent | React.WheelEvent): SkillShortcut {
-  const native = event.nativeEvent ? event.nativeEvent : event
+export function captureWheelShortcut(event: WheelEvent | ReactWheelEvent): SkillShortcut {
+  const native = 'nativeEvent' in event ? event.nativeEvent : event
   const modifiers = modifiersFromEvent(native)
   if (modifiers.length === 0) throw new Error('滚轮方向必须搭配 Ctrl、Alt、Shift 或 Meta。')
   const token = native.deltaY < 0 ? 'WheelUp' : 'WheelDown'
   return { kind: 'mouse', value: [...modifiers, token].join('+') }
 }
 
-export function captureMouseButtonShortcut(event: MouseEvent | React.MouseEvent): SkillShortcut {
-  const native = event.nativeEvent ? event.nativeEvent : event
+export function captureMouseButtonShortcut(event: MouseEvent | ReactMouseEvent): SkillShortcut {
+  const native = 'nativeEvent' in event ? event.nativeEvent : event
   const modifiers = modifiersFromEvent(native)
   const token = native.button === 1
     ? 'MouseMiddle'
