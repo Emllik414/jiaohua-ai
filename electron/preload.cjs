@@ -1,5 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+const skillShortcutDialog = require('./skill-shortcut-dialog-bridge.cjs').install({ ipcRenderer });
+
 contextBridge.exposeInMainWorld('desktopApi', {
   getInitialData: () => ipcRenderer.invoke('app:get-initial-data'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
@@ -10,6 +12,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   setSkillShortcut: (skillId, shortcut) => ipcRenderer.invoke('skill-shortcuts:set', { skillId, shortcut }),
   clearSkillShortcut: (skillId) => ipcRenderer.invoke('skill-shortcuts:clear', { skillId }),
   getSkillShortcutState: () => ipcRenderer.invoke('skill-shortcuts:get-state'),
+  openSkillShortcutDialog: (skillId) => skillShortcutDialog.open(skillId),
   runSkill: (skillId, selection) => ipcRenderer.invoke('skill:run', { skillId, selection }),
   copyText: (text, options) => ipcRenderer.invoke('clipboard:write', { text, options }),
 
@@ -133,6 +136,5 @@ contextBridge.exposeInMainWorld('desktopApi', {
   testProviderConnection: (providerId) => ipcRenderer.invoke('provider:test-connection', { providerId }),
 });
 
-// The skills page keeps its existing React implementation. This preload layer
-// only injects the additional shortcut menu item, badge and recording dialog.
+// Keep the existing badge/menu enhancer for compatibility with older builds.
 require('./skill-shortcut-ui-preload.cjs').install({ ipcRenderer });
