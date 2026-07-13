@@ -7,7 +7,7 @@
 })(typeof window !== 'undefined' ? window : null, function () {
   'use strict';
 
-  const VERSION = '2.0.0-caption-stability';
+  const VERSION = '2.1.0-caption-stability';
   const OVERLAY_ID = 'jiaohua-selectable-caption-overlay';
   const TEXT_SELECTOR = `#${OVERLAY_ID} .jiaohua-caption-text`;
   const HANDLE_SELECTOR = `#${OVERLAY_ID} .jiaohua-caption-drag-handle`;
@@ -27,13 +27,6 @@
 
   function containsCjk(value) {
     return /[\u3400-\u9fff]/.test(String(value || ''));
-  }
-
-  function wordTokens(value) {
-    const text = normalizeText(value);
-    if (!text) return [];
-    if (containsCjk(text)) return Array.from(text).filter((char) => !/\s/.test(char));
-    return text.match(/[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*|[^\sA-Za-z0-9]/g) || [];
   }
 
   function countWords(value) {
@@ -101,6 +94,7 @@
           maxWaitMs: 480,
           blankGraceMs: 240,
           disableAfterMs: 900,
+          selectionReleaseMs: 180,
           minWords: 3,
           idealMinWords: 5,
           idealMaxWords: 11,
@@ -115,6 +109,7 @@
           maxWaitMs: 900,
           blankGraceMs: 320,
           disableAfterMs: 1200,
+          selectionReleaseMs: 240,
           minWords: 4,
           idealMinWords: 6,
           idealMaxWords: 12,
@@ -256,6 +251,7 @@
       lastChangeAt: 0,
       cueSwitched: false,
       layout: null,
+      locked: false,
     };
 
     let overlay = null;
@@ -265,6 +261,7 @@
     let commitTimer = 0;
     let blankTimer = 0;
     let disableTimer = 0;
+    let selectionReleaseTimer = 0;
     let documentObserver = null;
     let overlayObserver = null;
     let playerResizeObserver = null;
@@ -273,10 +270,17 @@
     let applyingText = false;
 
     function clearTimer(name) {
-      const id = name === 'commit' ? commitTimer : name === 'blank' ? blankTimer : disableTimer;
+      const id = name === 'commit'
+        ? commitTimer
+        : name === 'blank'
+          ? blankTimer
+          : name === 'selection'
+            ? selectionReleaseTimer
+            : disableTimer;
       if (id) win.clearTimeout(id);
       if (name === 'commit') commitTimer = 0;
       else if (name === 'blank') blankTimer = 0;
+      else if (name === 'selection') selectionReleaseTimer = 0;
       else disableTimer = 0;
     }
 
@@ -365,7 +369,10 @@
     function bindResizeTargets() {
       const nextPlayer = findPlayer();
       const nextVideo = findVideo(nextPlayer);
-      if (nextPlayer === player && nextVideo === video) return;
+      if (nextPlayer === player && nextVideo === video) {
+        updateFontSize();
+        return;
+      }
 
       playerResizeObserver?.disconnect();
       videoResizeObserver?.disconnect();
@@ -411,7 +418,7 @@
 
     function commit() {
       clearTimer('commit');
-      if (!textElement?.isConnected) return;
+      if (state.locked || !textElement?.isConnected) return;
       const raw = normalizeText(state.rawText);
       if (!raw) return;
 
@@ -434,7 +441,7 @@
 
     function scheduleCommit() {
       clearTimer('commit');
-      if (!state.rawText || !textElement?.isConnected) return;
+      if (state.locked || !state.rawText || !textElement?.isConnected) return;
       const now = Date.now();
       const delay = nextCommitDelay(state, state.rawText, now);
       commitTimer = win.setTimeout(commit, delay);
@@ -451,7 +458,7 @@
       clearTimer('disable');
       blankTimer = win.setTimeout(() => {
         blankTimer = 0;
-        if (state.rawText) return;
+        if (state.rawText || state.locked) return;
         nativeSetText('');
         state.committedDisplay = '';
         state.layout = null;
@@ -460,7 +467,7 @@
 
       disableTimer = win.setTimeout(() => {
         disableTimer = 0;
-        if (state.rawText) return;
+        if (state.rawText || state.locked) return;
         state.committedRaw = '';
         state.committedDisplay = '';
         state.pendingSince = 0;
@@ -489,6 +496,23 @@
       state.cueSwitched = Boolean((state.previousRaw || state.committedRaw) && !wasRelated);
       if (!state.pendingSince || state.cueSwitched) state.pendingSince = now;
       scheduleCommit();
+    }
+
+    function lockSelection() {
+      state.locked = true;
+      clearTimer('selection');
+      clearTimer('commit');
+    }
+
+    function unlockSelectionSoon() {
+      if (!state.locked) return;
+      clearTimer('selection');
+      selectionReleaseTimer = win.setTimeout(() => {
+        selectionReleaseTimer = 0;
+        state.locked = false;
+        if (state.rawText) scheduleCommit();
+        else handleBlank();
+      }, state.policy.selectionReleaseMs);
     }
 
     function unbindTextElement() {
@@ -531,6 +555,7 @@
       overlay.removeAttribute(MANUAL_ATTRIBUTE);
       bindTextElement(overlay.querySelector('.jiaohua-caption-text'));
       bindResizeTargets();
+      updateFontSize();
 
       overlayObserver = new win.MutationObserver(() => {
         bindTextElement(overlay?.querySelector('.jiaohua-caption-text'));
@@ -550,6 +575,13 @@
     documentObserver = new win.MutationObserver(scan);
     documentObserver.observe(doc.documentElement, { childList: true, subtree: true });
 
+    doc.addEventListener('mousedown', (event) => {
+      const target = event.target instanceof win.Element ? event.target : null;
+      if (target?.closest(TEXT_SELECTOR) && !target.closest(HANDLE_SELECTOR)) lockSelection();
+    }, true);
+    doc.addEventListener('mouseup', unlockSelectionSoon, true);
+    doc.addEventListener('dragend', unlockSelectionSoon, true);
+
     doc.addEventListener('pointerdown', (event) => {
       const target = event.target instanceof win.Element ? event.target : null;
       if (!target?.closest(HANDLE_SELECTOR)) return;
@@ -564,6 +596,7 @@
       clearTimer('commit');
       clearTimer('blank');
       clearTimer('disable');
+      clearTimer('selection');
       documentObserver?.disconnect();
       overlayObserver?.disconnect();
       playerResizeObserver?.disconnect();
