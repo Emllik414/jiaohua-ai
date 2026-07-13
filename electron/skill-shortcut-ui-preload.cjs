@@ -130,13 +130,8 @@ function install({ ipcRenderer }) {
     const menuItems = directChildren.filter((node) => node.classList.contains('skill-menu-item'));
     const editItem = menuItems.find((node) => node.textContent?.trim() === '编辑技能') || null;
     const deleteItem = menuItems.find((node) => node.textContent?.trim() === '删除技能') || null;
-
-    for (const child of directChildren) {
-      if (child === editItem || child === deleteItem) continue;
-      child.remove();
-    }
-
     let shortcutItem = menu.querySelector('.skill-shortcut-menu-item-native');
+
     if (!shortcutItem) {
       shortcutItem = document.createElement('div');
       shortcutItem.className = 'skill-menu-item skill-shortcut-menu-item-native';
@@ -164,14 +159,18 @@ function install({ ipcRenderer }) {
       });
     }
 
-    if (editItem) menu.appendChild(editItem);
-    menu.appendChild(shortcutItem);
-    if (deleteItem) {
-      const separator = document.createElement('div');
+    let separator = menu.querySelector('.skill-shortcut-menu-sep-native');
+    if (deleteItem && !separator) {
+      separator = document.createElement('div');
       separator.className = 'skill-menu-sep skill-shortcut-menu-sep-native';
-      menu.appendChild(separator);
-      menu.appendChild(deleteItem);
     }
+
+    const desiredChildren = [editItem, shortcutItem, deleteItem ? separator : null, deleteItem].filter(Boolean);
+    const currentChildren = Array.from(menu.children);
+    const alreadyNormalized = currentChildren.length === desiredChildren.length
+      && currentChildren.every((node, childIndex) => node === desiredChildren[childIndex]);
+
+    if (!alreadyNormalized) menu.replaceChildren(...desiredChildren);
     menu.dataset.skillShortcutNormalized = '1';
   }
 
