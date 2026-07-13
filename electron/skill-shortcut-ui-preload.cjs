@@ -16,6 +16,8 @@ function install({ ipcRenderer }) {
   let bindings = {};
   let observer = null;
   let decorateQueued = false;
+  let refreshing = false;
+  let refreshTimer = null;
 
   function escapeHtml(value) {
     return String(value || '').replace(/[&<>'"]/g, (char) => ({
@@ -48,6 +50,7 @@ function install({ ipcRenderer }) {
     const style = document.createElement('style');
     style.id = 'skill-shortcut-injected-styles';
     style.textContent = `
+      .skill-row:has(.skill-shortcut-badge-injected){grid-template-columns:24px 32px minmax(0,1fr) auto auto 40px}
       .skill-shortcut-badge-injected{max-width:190px;height:28px;padding:0 10px;border-radius:999px;display:inline-flex;align-items:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid rgba(37,99,235,.14);background:rgba(37,99,235,.08);color:#2563eb;font-size:12px;font-weight:780}
       .skill-shortcut-overlay{position:fixed;inset:0;z-index:3000;display:grid;place-items:center;background:rgba(15,23,42,.34);backdrop-filter:blur(9px)}
       .skill-shortcut-dialog{width:min(560px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:hidden;border-radius:28px;background:#fff;color:#0f172a;box-shadow:0 28px 90px rgba(15,23,42,.30);display:flex;flex-direction:column}
@@ -59,12 +62,14 @@ function install({ ipcRenderer }) {
       .skill-shortcut-rules-injected{padding:12px 14px;border-radius:16px;background:#f8fafc;color:#52637a;font-size:12.5px;line-height:1.7}.skill-shortcut-error-injected{display:none;padding:9px 12px;border-radius:12px;background:#fef2f2;color:#dc2626;font-size:13px}.skill-shortcut-error-injected.show{display:block}
       .skill-shortcut-footer-injected{min-height:74px;padding:0 26px;border-top:1px solid rgba(15,23,42,.07);background:#f8fafc;display:flex;align-items:center;gap:10px}.skill-shortcut-footer-injected .spacer{flex:1}.skill-shortcut-footer-injected button{height:38px;padding:0 14px;border-radius:14px;border:1px solid rgba(15,23,42,.08);background:#fff;color:#334155;font-weight:760;cursor:pointer}.skill-shortcut-footer-injected button.primary{border:0;background:#111827;color:#fff;padding:0 18px}.skill-shortcut-footer-injected button.danger{color:#dc2626}.skill-shortcut-footer-injected button:disabled{opacity:.48;cursor:not-allowed}
       html[data-appearance='dark'] .skill-shortcut-dialog{background:#111827;color:#f8fafc}html[data-appearance='dark'] .skill-shortcut-dialog header,html[data-appearance='dark'] .skill-shortcut-footer-injected{border-color:rgba(255,255,255,.08);background:#0f172a}html[data-appearance='dark'] .skill-shortcut-skill-injected,html[data-appearance='dark'] .skill-shortcut-rules-injected{border-color:rgba(255,255,255,.08);background:#172033}html[data-appearance='dark'] .skill-shortcut-capture-injected{border-color:#475569;background:#0f172a}html[data-appearance='dark'] .skill-shortcut-footer-injected button{border-color:rgba(255,255,255,.10);background:#172033;color:#e2e8f0}
-      @media(max-width:820px){.skill-shortcut-badge-injected{display:none}}
+      @media(max-width:820px){.skill-row:has(.skill-shortcut-badge-injected){grid-template-columns:24px 32px minmax(0,1fr) auto 40px}.skill-shortcut-badge-injected{display:none}}
     `;
     document.head.appendChild(style);
   }
 
   async function refreshState() {
+    if (refreshing) return;
+    refreshing = true;
     try {
       const [data, state] = await Promise.all([
         ipcRenderer.invoke('app:get-initial-data'),
@@ -75,7 +80,17 @@ function install({ ipcRenderer }) {
       queueDecorate();
     } catch (error) {
       console.warn('[SkillShortcutUI] state load failed', error);
+    } finally {
+      refreshing = false;
     }
+  }
+
+  function scheduleStateRefresh(delay = 40) {
+    if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+    refreshTimer = window.setTimeout(() => {
+      refreshTimer = null;
+      void refreshState();
+    }, delay);
   }
 
   function queueDecorate() {
@@ -89,6 +104,16 @@ function install({ ipcRenderer }) {
 
   function decorateRows() {
     const rows = Array.from(document.querySelectorAll('.skill-row'));
+    if (rows.length > 0) {
+      const visibleNames = rows.map((row) => String(row.querySelector('.skill-row-name')?.textContent || '').trim());
+      const expectedNames = skills.slice(0, rows.length).map((skill) => String(skill?.name || '').trim());
+      const orderMismatch = skills.length < rows.length || visibleNames.some((name, index) => name !== expectedNames[index]);
+      if (orderMismatch) {
+        scheduleStateRefresh();
+        return;
+      }
+    }
+
     rows.forEach((row, index) => {
       const skill = skills[index];
       if (!skill) return;
@@ -110,9 +135,12 @@ function install({ ipcRenderer }) {
       }
 
       const menu = row.querySelector('.skill-menu');
+      const existingItem = menu?.querySelector('.skill-shortcut-menu-item-injected');
+      if (existingItem && existingItem.dataset.skillId !== String(skill.id)) existingItem.remove();
       if (menu && !menu.querySelector('.skill-shortcut-menu-item-injected')) {
         const item = document.createElement('div');
         item.className = 'skill-menu-item skill-shortcut-menu-item-injected';
+        item.dataset.skillId = String(skill.id);
         item.textContent = '设置快捷键';
         item.addEventListener('mousedown', (event) => {
           event.preventDefault();
@@ -190,19 +218,27 @@ function install({ ipcRenderer }) {
       accept({ kind: 'keyboard', value: [...modifiers, key].join('+') });
     });
     capture.addEventListener('wheel', (event) => {
-      event.preventDefault(); event.stopPropagation();
+      event.preventDefault();
+      event.stopPropagation();
       const modifiers = modifierParts(event);
       if (modifiers.length === 0) { setError('滚轮方向必须搭配 Ctrl、Alt、Shift 或 Meta。'); return; }
       accept({ kind: 'mouse', value: [...modifiers, event.deltaY < 0 ? 'WheelUp' : 'WheelDown'].join('+') });
     }, { passive: false });
+
     const captureMouse = (event) => {
       if (![1, 3, 4].includes(event.button)) return;
-      event.preventDefault(); event.stopPropagation();
+      event.preventDefault();
+      event.stopPropagation();
       const token = event.button === 1 ? 'MouseMiddle' : event.button === 3 ? 'MouseX1' : 'MouseX2';
       accept({ kind: 'mouse', value: [...modifierParts(event), token].join('+') });
     };
     capture.addEventListener('mousedown', captureMouse, true);
-    capture.addEventListener('mouseup', (event) => { if ([1, 3, 4].includes(event.button)) { event.preventDefault(); event.stopPropagation(); } }, true);
+    capture.addEventListener('mouseup', (event) => {
+      if ([1, 3, 4].includes(event.button)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, true);
     capture.addEventListener('auxclick', captureMouse, true);
     capture.addEventListener('contextmenu', (event) => event.preventDefault());
 
@@ -211,29 +247,45 @@ function install({ ipcRenderer }) {
     overlay.addEventListener('mousedown', (event) => { if (event.target === overlay) close(); });
     saveButton.addEventListener('click', async () => {
       if (!draft || busy) return;
-      busy = true; render(); setError('');
+      busy = true;
+      render();
+      setError('');
       try {
         const result = await ipcRenderer.invoke('skill-shortcuts:set', { skillId: skill.id, shortcut: draft });
-        if (!result?.ok) { setError(result?.error || '快捷键保存失败。'); return; }
+        if (!result?.ok) {
+          setError(result?.error || '快捷键保存失败。');
+          return;
+        }
         bindings[skill.id] = result.shortcut;
         close();
         await refreshState();
       } catch (error) {
         setError(error instanceof Error ? error.message : String(error));
-      } finally { busy = false; render(); }
+      } finally {
+        busy = false;
+        if (overlay.isConnected) render();
+      }
     });
     clearButton.addEventListener('click', async () => {
       if (busy) return;
-      busy = true; render(); setError('');
+      busy = true;
+      render();
+      setError('');
       try {
         const result = await ipcRenderer.invoke('skill-shortcuts:clear', { skillId: skill.id });
-        if (!result?.ok) { setError(result?.error || '快捷键清除失败。'); return; }
+        if (!result?.ok) {
+          setError(result?.error || '快捷键清除失败。');
+          return;
+        }
         delete bindings[skill.id];
         close();
         await refreshState();
       } catch (error) {
         setError(error instanceof Error ? error.message : String(error));
-      } finally { busy = false; render(); }
+      } finally {
+        busy = false;
+        if (overlay.isConnected) render();
+      }
     });
 
     render();
@@ -242,10 +294,16 @@ function install({ ipcRenderer }) {
 
   function start() {
     injectStyles();
-    refreshState();
+    void refreshState();
     observer = new MutationObserver(queueDecorate);
     observer.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener('beforeunload', () => observer?.disconnect(), { once: true });
+    const onSkillsUpdated = () => scheduleStateRefresh(0);
+    ipcRenderer.on('skills:updated', onSkillsUpdated);
+    window.addEventListener('beforeunload', () => {
+      observer?.disconnect();
+      ipcRenderer.removeListener('skills:updated', onSkillsUpdated);
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+    }, { once: true });
   }
 
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', start, { once: true });
