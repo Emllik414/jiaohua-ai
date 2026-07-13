@@ -54,8 +54,47 @@ function skillShortcutMenuPlugin(): Plugin {
   }
 }
 
+function pronunciationCardPlugin(): Plugin {
+  return {
+    name: 'jiaohua-pronunciation-card-expanded',
+    enforce: 'pre',
+    transform(code, id) {
+      if (!id.replace(/\\/g, '/').endsWith('/src/App.tsx')) return null
+
+      let next = code.replace(/\r\n?/g, '\n')
+      const stateLine = `  const [detailsOpen, setDetailsOpen] = useState(false)`
+      const resetLine = `  useEffect(() => setDetailsOpen(false), [data.text])`
+      const collapsedBlock = `      {answer ? (
+        isRunning ? <AnswerView text={answer} format={answerFormat} variant="pronunciation" streaming /> : (
+          <div className={'pronunciation-details' + (detailsOpen ? ' expanded' : '')}>
+            <div className="pronunciation-details-content">
+              <AnswerView text={answer} format={answerFormat} variant="pronunciation" />
+            </div>
+            <button className="pronunciation-details-toggle" onClick={(event) => { event.stopPropagation(); setDetailsOpen((value) => !value) }}>
+              {detailsOpen ? '收起详细解析' : '查看详细解析'} <span aria-hidden="true">⌄</span>
+            </button>
+          </div>
+        )
+      ) : null}`
+      const expandedBlock = `      {answer ? (
+        <AnswerView text={answer} format={answerFormat} variant="pronunciation" streaming={isRunning} />
+      ) : null}`
+
+      if (!next.includes(stateLine) || !next.includes(resetLine) || !next.includes(collapsedBlock)) {
+        throw new Error('[pronunciation-card] cannot find the collapsible pronunciation card markers in src/App.tsx')
+      }
+
+      next = next.replace(`${stateLine}\n`, '')
+      next = next.replace(`\n${resetLine}\n`, '\n')
+      next = next.replace(collapsedBlock, expandedBlock)
+
+      return { code: next, map: null }
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   base: './',
-  plugins: [skillShortcutMenuPlugin(), react(), tailwindcss()],
+  plugins: [skillShortcutMenuPlugin(), pronunciationCardPlugin(), react(), tailwindcss()],
 })
