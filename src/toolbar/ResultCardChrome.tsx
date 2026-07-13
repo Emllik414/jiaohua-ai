@@ -245,7 +245,7 @@ export function ResultCardChrome({
     scheduleResize()
     const observer = new ResizeObserver(() => scheduleResize())
     const observed = [headerRef.current, sourceRef.current, answerRef.current, footerRef.current]
-      .filter((element): element is Element => Boolean(element))
+      .filter((element): element is HTMLDivElement => element !== null)
     observed.forEach((element) => observer.observe(element))
     return () => {
       observer.disconnect()
