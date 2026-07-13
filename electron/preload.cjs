@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('desktopApi', {
   saveSkill: (skill) => ipcRenderer.invoke('skills:save', skill),
   reorderSkills: (skillIds) => ipcRenderer.invoke('skills:reorder', skillIds),
   deleteSkill: (skillId) => ipcRenderer.invoke('skills:delete', skillId),
+  validateSkillShortcut: (skillId, shortcut) => ipcRenderer.invoke('skill-shortcuts:validate', { skillId, shortcut }),
+  setSkillShortcut: (skillId, shortcut) => ipcRenderer.invoke('skill-shortcuts:set', { skillId, shortcut }),
+  clearSkillShortcut: (skillId) => ipcRenderer.invoke('skill-shortcuts:clear', { skillId }),
+  getSkillShortcutState: () => ipcRenderer.invoke('skill-shortcuts:get-state'),
   runSkill: (skillId, selection) => ipcRenderer.invoke('skill:run', { skillId, selection }),
   copyText: (text, options) => ipcRenderer.invoke('clipboard:write', { text, options }),
 
@@ -128,3 +132,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   getProviderPresets: () => ipcRenderer.invoke('provider:get-presets'),
   testProviderConnection: (providerId) => ipcRenderer.invoke('provider:test-connection', { providerId }),
 });
+
+// The skills page keeps its existing React implementation. This preload layer
+// only injects the additional shortcut menu item, badge and recording dialog.
+require('./skill-shortcut-ui-preload.cjs').install({ ipcRenderer });
