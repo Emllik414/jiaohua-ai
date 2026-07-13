@@ -1,0 +1,56 @@
+name: Run result layout patch
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - tools/run-result-layout-patch.trigger
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract and run validated patch
+        shell: bash
+        run: |
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/apply-result-layout-stability.yml').read_text(encoding='utf-8')
+          start_marker = "          python3 - <<'PY'\n"
+          end_marker = "\n          PY\n"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          lines = workflow[start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          Path('/tmp/apply-result-layout.py').write_text(script, encoding='utf-8')
+          EXTRACT
+          python3 /tmp/apply-result-layout.py
+
+      - name: Validate JavaScript syntax
+        run: node --check electron/main.cjs
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build renderer
+        run: npm run build
+
+      - name: Commit validated patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-result-layout-stability.yml
+          git rm .github/workflows/run-result-layout-patch.yml
+          git rm tools/run-result-layout-patch.trigger
+          git add electron/main.cjs src/toolbar/ResultCardChrome.tsx src/toolbar/toolbar.css
+          git commit -m "stabilize bidirectional result card growth"
+          git push origin master
