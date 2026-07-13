@@ -1,0 +1,56 @@
+name: Fix result card observer types
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/fix-result-card-observer-types.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fix ResizeObserver element predicate
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/toolbar/ResultCardChrome.tsx')
+          text = path.read_text(encoding='utf-8')
+          old = ".filter((element): element is Element => Boolean(element))"
+          new = ".filter((element): element is HTMLDivElement => element !== null)"
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one predicate to replace, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Validate JavaScript syntax
+        run: |
+          node --check electron/result-window-stability.cjs
+          node --check electron/bootstrap.cjs
+          node --check electron/main.cjs
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build application
+        run: npm run build
+
+      - name: Commit validated fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/fix-result-card-observer-types.yml
+          git add src/toolbar/ResultCardChrome.tsx
+          git commit -m "fix result card observer types"
+          git push origin master
