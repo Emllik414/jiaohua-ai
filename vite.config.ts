@@ -31,7 +31,10 @@ function skillShortcutMenuPlugin(): Plugin {
             <div
               className="skill-menu-item"
               data-skill-shortcut-compiled={skill.id}
-              onClick={() => setMenuSkill(null)}
+              onClick={() => {
+                void window.desktopApi.openSkillShortcutDialog(skill.id)
+                setMenuSkill(null)
+              }}
             >设置快捷键</div>
             {isCustomSkill(skill) ? (
               <>
