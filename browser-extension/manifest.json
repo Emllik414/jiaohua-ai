@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "饺滑-AI划词助手",
   "short_name": "饺滑",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "icons": {
     "16": "icon-16.png",
     "32": "icon-32.png",
@@ -24,9 +24,8 @@
       "js": [
         "native-cc-segmentation.js",
         "subtitle-placement-anchor.js",
-        "caption-text-stabilizer.js",
         "content.js",
-        "caption-layout-controller.js"
+        "caption-stability-v2.js"
       ],
       "run_at": "document_end",
       "all_frames": true,
