@@ -65,14 +65,17 @@ test('prefers punctuation when splitting two visual lines', () => {
 });
 
 test('keeps a previous valid line break while a phrase grows', () => {
-  const first = layoutCaption('I really wanted to tell you what happened', { maxWidth: 16 });
-  assert.notEqual(first.breakIndex, null);
+  const previous = {
+    text: 'I really wanted to tell you what happened',
+    display: 'I really wanted to\ntell you what happened',
+    breakIndex: 4,
+  };
 
   const grown = layoutCaption(
-    'I really wanted to tell you what happened but I could not',
-    { maxWidth: 16, previous: first },
+    'I really wanted to tell you what happened today',
+    { maxWidth: 16, previous },
   );
-  assert.equal(grown.breakIndex, first.breakIndex);
+  assert.equal(grown.breakIndex, previous.breakIndex);
 });
 
 test('keeps short captions on one line', () => {
