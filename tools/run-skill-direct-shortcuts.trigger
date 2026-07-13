@@ -1,0 +1,1 @@
+trigger: compact integration runner
