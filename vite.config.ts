@@ -24,8 +24,8 @@ function skillShortcutMenuPlugin(): Plugin {
       const menuItems = `
             <div className="skill-menu-item" onClick={() => { setEditing({ ...skill }); setMenuSkill(null) }}>编辑技能</div>
             <div
-              className="skill-menu-item skill-shortcut-menu-item-native"
-              data-skill-shortcut-id={skill.id}
+              className="skill-menu-item"
+              data-skill-shortcut-compiled={skill.id}
               onClick={() => setMenuSkill(null)}
             >设置快捷键</div>
             {isCustomSkill(skill) ? (
