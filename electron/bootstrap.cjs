@@ -215,10 +215,9 @@ async function runBrowserExtensionOnboarding() {
   writeJson(stateFile, { ...nextState, lastAction: 'remind-later' });
 }
 
-// Install the result-window bounds controller before main.cjs registers IPC
-// handlers and creates BrowserWindows. The existing business logic remains the
-// source of truth; this layer only stabilizes sizing and directional anchoring.
+// Install controllers before main.cjs registers IPC handlers and creates windows.
 require('./result-window-stability.cjs').install();
+require('./skill-shortcut-runtime.cjs').install();
 
 // Keep the existing application logic unchanged. This wrapper only adds
 // browser-extension delivery and first-run onboarding around it.
