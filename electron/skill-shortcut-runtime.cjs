@@ -376,8 +376,10 @@ using System.Windows.Forms;
 public class SkillMouseShortcutHook {
   private const int WH_MOUSE_LL = 14;
   private const int WM_MBUTTONDOWN = 0x0207;
+  private const int WM_MBUTTONUP = 0x0208;
   private const int WM_MOUSEWHEEL = 0x020A;
   private const int WM_XBUTTONDOWN = 0x020B;
+  private const int WM_XBUTTONUP = 0x020C;
   private const int VK_SHIFT = 0x10;
   private const int VK_CONTROL = 0x11;
   private const int VK_MENU = 0x12;
@@ -388,6 +390,8 @@ public class SkillMouseShortcutHook {
   private static readonly object gate = new object();
   private static readonly Dictionary<string, string> bindings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
   private static bool active = false;
+  private static bool suppressMiddleUp = false;
+  private static int suppressXButtonUp = 0;
 
   public static void Run() {
     Thread inputThread = new Thread(ReadCommands);
@@ -441,13 +445,33 @@ public class SkillMouseShortcutHook {
     if (code >= 0) {
       int message = messagePointer.ToInt32();
       string token = "";
+      int xButton = 0;
       MSLLHOOKSTRUCT data = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(dataPointer, typeof(MSLLHOOKSTRUCT));
+
+      if (message == WM_MBUTTONUP) {
+        bool consume = false;
+        lock (gate) {
+          consume = suppressMiddleUp;
+          suppressMiddleUp = false;
+        }
+        if (consume) return (IntPtr)1;
+      }
+
+      if (message == WM_XBUTTONUP) {
+        int releasedButton = (int)((data.mouseData >> 16) & 0xffff);
+        bool consume = false;
+        lock (gate) {
+          consume = suppressXButtonUp == releasedButton && releasedButton != 0;
+          if (consume) suppressXButtonUp = 0;
+        }
+        if (consume) return (IntPtr)1;
+      }
 
       if (message == WM_MBUTTONDOWN) {
         token = "MouseMiddle";
       } else if (message == WM_XBUTTONDOWN) {
-        int button = (int)((data.mouseData >> 16) & 0xffff);
-        token = button == 1 ? "MouseX1" : button == 2 ? "MouseX2" : "";
+        xButton = (int)((data.mouseData >> 16) & 0xffff);
+        token = xButton == 1 ? "MouseX1" : xButton == 2 ? "MouseX2" : "";
       } else if (message == WM_MOUSEWHEEL) {
         short delta = unchecked((short)((data.mouseData >> 16) & 0xffff));
         token = delta > 0 ? "WheelUp" : "WheelDown";
@@ -460,6 +484,8 @@ public class SkillMouseShortcutHook {
           if (active && bindings.TryGetValue(binding, out skillId)) {
             active = false;
             bindings.Clear();
+            if (token == "MouseMiddle") suppressMiddleUp = true;
+            if (token == "MouseX1" || token == "MouseX2") suppressXButtonUp = xButton;
           } else {
             skillId = "";
           }
