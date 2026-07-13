@@ -1,6 +1,5 @@
-﻿import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { useLayoutEffect } from 'react'
 import { SkillIcon } from '../components/SkillIcon'
 import './toolbar.css'
 
@@ -23,8 +22,21 @@ type ResultCardChromeProps = {
   onPointerDown: () => void
 }
 
+type ScrollMode = 'following' | 'reading' | 'returning'
+type ResizeSnapshot = {
+  screenY: number
+  scrollTop: number
+  bottomDistance: number
+  mode: ScrollMode
+  anchorElement: Element | null
+  anchorScreenTop: number
+}
+
 const RESULT_STREAM_BASE_HEIGHT = 360
-const RESULT_STREAM_RESIZE_STEP = 22
+const RESULT_STREAM_RESIZE_STEP = 26
+const RESULT_RESIZE_BATCH_MS = 120
+const FOLLOW_BOTTOM_DISTANCE = 40
+const READING_BOTTOM_DISTANCE = 78
 
 export function ResultCardChrome({
   title,
@@ -42,127 +54,268 @@ export function ResultCardChrome({
   onPointerLeave,
   onPointerDown,
 }: ResultCardChromeProps) {
+  const innerCardRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<number | null>(null)
+  const resizeTimerRef = useRef<number | null>(null)
+  const lastResizeAtRef = useRef(0)
+  const lastRequestedHeightRef = useRef(0)
+  const nativeHeightLimitRef = useRef(Number.POSITIVE_INFINITY)
+  const headerRef = useRef<HTMLDivElement>(null)
+  const sourceRef = useRef<HTMLDivElement>(null)
+  const answerRef = useRef<HTMLDivElement>(null)
+  const footerRef = useRef<HTMLDivElement>(null)
+  const wasStreamingRef = useRef(false)
+  const scrollModeRef = useRef<ScrollMode>('following')
+  const programmaticScrollRef = useRef(false)
+  const resizeSnapshotRef = useRef<ResizeSnapshot | null>(null)
+  const effectiveRef = cardRef || innerCardRef
+  const [showScrollDown, setShowScrollDown] = useState(false)
+  const [popIn, setPopIn] = useState(true)
 
-  const innerCardRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
- const frameRef = useRef<number | null>(null);
-  const resizeTimerRef = useRef<number | null>(null);
-  const lastResizeAtRef = useRef(0);
-  const lastRequestedHeightRef = useRef(0);
-  const autoFollowRef = useRef(true);
-  const headerRef = useRef<HTMLDivElement>(null);
-  const sourceRef = useRef<HTMLDivElement>(null);
-  const answerRef = useRef<HTMLDivElement>(null);
-  const footerRef = useRef<HTMLDivElement>(null);
-  const wasStreamingRef = useRef(false);
-  const effectiveRef = cardRef || innerCardRef;
- const [showScrollDown, setShowScrollDown] = useState<boolean>(false);
-  const [popIn, setPopIn] = useState<boolean>(true);
+  const distanceFromBottom = (element: HTMLDivElement) =>
+    Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight)
+
+  const markProgrammaticScroll = (callback: () => void) => {
+    programmaticScrollRef.current = true
+    callback()
+    window.requestAnimationFrame(() => {
+      programmaticScrollRef.current = false
+    })
+  }
+
+  const refreshScrollAffordance = (event?: Event) => {
+    const element = scrollRef.current
+    if (!element) return
+    const distance = distanceFromBottom(element)
+    const trustedManualScroll = Boolean(event?.isTrusted) && !programmaticScrollRef.current
+
+    if (scrollModeRef.current === 'returning' && distance <= FOLLOW_BOTTOM_DISTANCE) {
+      scrollModeRef.current = 'following'
+    } else if (scrollModeRef.current === 'reading' && distance <= FOLLOW_BOTTOM_DISTANCE) {
+      scrollModeRef.current = 'following'
+    } else if (
+      scrollModeRef.current === 'following' &&
+      trustedManualScroll &&
+      distance > READING_BOTTOM_DISTANCE
+    ) {
+      scrollModeRef.current = 'reading'
+    }
+
+    setShowScrollDown(scrollModeRef.current !== 'following' && distance > FOLLOW_BOTTOM_DISTANCE)
+  }
+
+  const findVisibleAnchor = () => {
+    const viewport = scrollRef.current
+    if (!viewport) return null
+    const viewportRect = viewport.getBoundingClientRect()
+    const candidates: Element[] = []
+    if (sourceRef.current) candidates.push(sourceRef.current)
+    if (answerRef.current) {
+      const blocks = Array.from(answerRef.current.querySelectorAll(':scope > *'))
+      candidates.push(...(blocks.length ? blocks : [answerRef.current]))
+    }
+    return candidates.find((element) => {
+      const rect = element.getBoundingClientRect()
+      return rect.bottom > viewportRect.top + 2 && rect.top < viewportRect.bottom - 2
+    }) || null
+  }
+
+  const captureResizeSnapshot = () => {
+    const element = scrollRef.current
+    if (!element) return
+    const anchorElement = scrollModeRef.current === 'reading' ? findVisibleAnchor() : null
+    resizeSnapshotRef.current = {
+      screenY: window.screenY,
+      scrollTop: element.scrollTop,
+      bottomDistance: distanceFromBottom(element),
+      mode: scrollModeRef.current,
+      anchorElement,
+      anchorScreenTop: anchorElement
+        ? window.screenY + anchorElement.getBoundingClientRect().top
+        : 0,
+    }
+  }
 
   useEffect(() => {
-    setPopIn(true);
-    const t = setTimeout(() => setPopIn(false), 500);
-    return () => clearTimeout(t);
-  }, []);
+    setPopIn(true)
+    const timer = window.setTimeout(() => setPopIn(false), 500)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   useEffect(() => {
     if (status === 'running' && !wasStreamingRef.current) {
-      // A new stream starts from the normal card height. It will only grow
-      // after another rendered line is available.
-      lastRequestedHeightRef.current = RESULT_STREAM_BASE_HEIGHT;
+      lastRequestedHeightRef.current = RESULT_STREAM_BASE_HEIGHT
+      nativeHeightLimitRef.current = Number.POSITIVE_INFINITY
+      scrollModeRef.current = 'following'
+      setShowScrollDown(false)
     }
-    wasStreamingRef.current = status === 'running';
-  }, [status]);
-
-  const scheduleResize = () => {
-    if (popIn) return;
-    if (resizeTimerRef.current !== null) return;
-    const elapsed = performance.now() - lastResizeAtRef.current;
-    const delay = Math.max(0, 80 - elapsed);
-    resizeTimerRef.current = window.setTimeout(() => {
-      resizeTimerRef.current = null;
-      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-      frameRef.current = requestAnimationFrame(() => {
-        frameRef.current = null;
-        lastResizeAtRef.current = performance.now();
-        const el = effectiveRef.current;
-        if (!el) return;
-        const headerH = headerRef.current?.offsetHeight ?? 0;
-        const sourceH = sourceRef.current?.offsetHeight ?? 0;
-        const answerH = answerRef.current?.scrollHeight ?? scrollRef.current?.scrollHeight ?? 0;
-        const footerH = footerRef.current?.offsetHeight ?? 0;
-        const chromeExtra = 24;
-        const h = Math.ceil(headerH + sourceH + answerH + footerH + chromeExtra);
-        if (h <= 0) return;
-
-        const previousHeight = lastRequestedHeightRef.current;
-        const isStreaming = status === 'running';
-        const growsByLine = h >= Math.max(RESULT_STREAM_BASE_HEIGHT, previousHeight + RESULT_STREAM_RESIZE_STEP);
-        const finalSizeChanged = !isStreaming && (previousHeight === 0 || Math.abs(h - previousHeight) >= 10);
-        if (!growsByLine && !finalSizeChanged) return;
-
-        lastRequestedHeightRef.current = h;
-        try { (window.desktopApi as any).resizeResultBox?.({ height: h }); } catch (_) {}
-      });
-    }, delay);
-  };
+    wasStreamingRef.current = status === 'running'
+  }, [status])
 
   useEffect(() => {
-    if (popIn) return;
-    const el = effectiveRef.current;
-    if (!el) return;
-    scheduleResize();
-    const obs = new ResizeObserver(() => scheduleResize());
-    obs.observe(el);
+    const restoreAfterNativeResize = () => {
+      const snapshot = resizeSnapshotRef.current
+      const element = scrollRef.current
+      if (!snapshot || !element) return
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const current = resizeSnapshotRef.current
+          const scrollElement = scrollRef.current
+          if (!current || !scrollElement) return
+          markProgrammaticScroll(() => {
+            if (current.mode === 'reading') {
+              const anchor = current.anchorElement
+              if (anchor && anchor.isConnected) {
+                const currentScreenTop = window.screenY + anchor.getBoundingClientRect().top
+                scrollElement.scrollTop += currentScreenTop - current.anchorScreenTop
+              } else {
+                scrollElement.scrollTop = Math.max(
+                  0,
+                  current.scrollTop + (window.screenY - current.screenY),
+                )
+              }
+            } else {
+              scrollElement.scrollTop = Math.max(
+                0,
+                scrollElement.scrollHeight - scrollElement.clientHeight - current.bottomDistance,
+              )
+            }
+          })
+          resizeSnapshotRef.current = null
+          refreshScrollAffordance()
+        })
+      })
+    }
+    window.addEventListener('resize', restoreAfterNativeResize)
+    return () => window.removeEventListener('resize', restoreAfterNativeResize)
+  }, [])
+
+  const scheduleResize = () => {
+    if (popIn || resizeTimerRef.current !== null) return
+    const elapsed = performance.now() - lastResizeAtRef.current
+    const delay = Math.max(0, RESULT_RESIZE_BATCH_MS - elapsed)
+    resizeTimerRef.current = window.setTimeout(() => {
+      resizeTimerRef.current = null
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
+      frameRef.current = requestAnimationFrame(() => {
+        frameRef.current = null
+        lastResizeAtRef.current = performance.now()
+        const headerHeight = headerRef.current?.offsetHeight ?? 0
+        const sourceHeight = sourceRef.current?.offsetHeight ?? 0
+        const answerHeight = answerRef.current?.scrollHeight ?? scrollRef.current?.scrollHeight ?? 0
+        const footerHeight = footerRef.current?.offsetHeight ?? 0
+        const desiredHeight = Math.ceil(headerHeight + sourceHeight + answerHeight + footerHeight + 24)
+        if (desiredHeight <= 0) return
+
+        const previousHeight = lastRequestedHeightRef.current
+        const heightLimit = nativeHeightLimitRef.current
+        if (Number.isFinite(heightLimit) && previousHeight >= heightLimit && desiredHeight >= heightLimit) {
+          return
+        }
+
+        const streaming = status === 'running'
+        const growsByLine = desiredHeight >= Math.max(
+          RESULT_STREAM_BASE_HEIGHT,
+          previousHeight + RESULT_STREAM_RESIZE_STEP,
+        )
+        const finalSizeChanged = !streaming && (
+          previousHeight === 0 ||
+          Math.abs(desiredHeight - previousHeight) >= RESULT_STREAM_RESIZE_STEP
+        )
+        if (!growsByLine && !finalSizeChanged) return
+
+        lastRequestedHeightRef.current = desiredHeight
+        captureResizeSnapshot()
+        try {
+          const request = (window.desktopApi as any).resizeResultBox?.({ height: desiredHeight })
+          void Promise.resolve(request).then((result: any) => {
+            const nextLimit = Number(result?.heightLimit)
+            if (Number.isFinite(nextLimit) && nextLimit > 0) {
+              nativeHeightLimitRef.current = nextLimit
+            }
+          })
+        } catch (_) {}
+      })
+    }, delay)
+  }
+
+  useEffect(() => {
+    if (popIn) return
+    scheduleResize()
+    const observer = new ResizeObserver(() => scheduleResize())
+    const observed = [headerRef.current, sourceRef.current, answerRef.current, footerRef.current]
+      .filter((element): element is Element => Boolean(element))
+    observed.forEach((element) => observer.observe(element))
     return () => {
-      obs.disconnect();
-      if (resizeTimerRef.current !== null) window.clearTimeout(resizeTimerRef.current);
-      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-    };
-  }, [popIn, effectiveRef]);
+      observer.disconnect()
+      if (resizeTimerRef.current !== null) window.clearTimeout(resizeTimerRef.current)
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
+    }
+  }, [popIn])
 
-  useEffect(() => { scheduleResize(); }, [children, status]);
+  useEffect(() => {
+    scheduleResize()
+  }, [children, status])
 
- useEffect(() => {
-   const el = scrollRef.current;
-   if (!el) return;
-   const check = () => {
-      const d = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (d <= 48) autoFollowRef.current = true;
-      else if (d > 80) autoFollowRef.current = false;
-      // This is a return-to-latest affordance, not a permanent decoration.
-      // It appears only after the user has moved away from the live bottom.
-      setShowScrollDown(!autoFollowRef.current && d > 48);
-   };
-   check();
-   el.addEventListener('scroll', check);
-   return () => el.removeEventListener('scroll', check);
- }, [children]);
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const onScroll = (event: Event) => refreshScrollAffordance(event)
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) {
+        scrollModeRef.current = 'reading'
+        setShowScrollDown(true)
+      }
+    }
+    element.addEventListener('scroll', onScroll)
+    element.addEventListener('wheel', onWheel, { passive: true })
+    refreshScrollAffordance()
+    return () => {
+      element.removeEventListener('scroll', onScroll)
+      element.removeEventListener('wheel', onWheel)
+    }
+  }, [])
 
- const scrollToBottom = () => {
-   scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' as ScrollBehavior });
-    autoFollowRef.current = true;
- };
+  const scrollToBottom = () => {
+    const element = scrollRef.current
+    if (!element) return
+    scrollModeRef.current = 'returning'
+    setShowScrollDown(false)
+    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' })
+  }
 
   useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !autoFollowRef.current) return;
-    // Run before paint: the newly typed character and the scroll position then
-    // reach the screen together, without a visible one-frame jump.
-    el.scrollTop = el.scrollHeight;
-  }, [children]);
+    const element = scrollRef.current
+    if (!element || scrollModeRef.current !== 'following') return
+    markProgrammaticScroll(() => {
+      element.scrollTop = element.scrollHeight
+    })
+    refreshScrollAffordance()
+  }, [children])
 
   return (
     <div
       ref={effectiveRef}
-      className={'result-card' + (popIn ? ' pop-in' : '')}
+      className={'result-card' + (popIn ? ' pop-in' : '') + (status === 'running' ? ' is-streaming' : '')}
+      style={{
+        height: '100vh',
+        minHeight: 0,
+        maxHeight: 'none',
+        boxSizing: 'border-box',
+        transition: 'box-shadow 180ms ease',
+      }}
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
       onMouseDown={onPointerDown}
       onPointerDown={onPointerDown}
     >
-      <header ref={headerRef} className='result-card-header' onMouseDown={onHeaderMouseDown}
-        style={{ WebkitAppRegion: 'drag' } as any}>
+      <header
+        ref={headerRef}
+        className='result-card-header'
+        onMouseDown={onHeaderMouseDown}
+        style={{ WebkitAppRegion: 'drag' } as any}
+      >
         <div className='top-drag-grip' />
         <span className='skill-avatar'><SkillIcon iconKey={skillIconKey || 'spark'} /></span>
         <div className='title-block'>
@@ -172,18 +325,39 @@ export function ResultCardChrome({
           </div>
           <div className='model-line'>{status === 'running' ? '正在生成中...' : subtitle}</div>
         </div>
-        <button className='close-btn' onClick={onClose} title='关闭'
-          style={{ WebkitAppRegion: 'no-drag' } as any}>
+        <button
+          className='close-btn'
+          onClick={onClose}
+          title='关闭'
+          style={{ WebkitAppRegion: 'no-drag' } as any}
+        >
           <SkillIcon iconKey='close' />
         </button>
       </header>
 
       <div className='result-card-scroll-shell'>
-        <div className='result-card-scroll' ref={scrollRef}>
+        <div
+          className='result-card-scroll'
+          ref={scrollRef}
+          style={{
+            scrollBehavior: 'auto',
+            overflowAnchor: 'none',
+            overscrollBehavior: 'contain',
+          } as any}
+        >
           <section ref={sourceRef} className='source-quote'>
             <div className='source-head'>
               <span>原文</span>
-              <button className='copy-inline' aria-label='复制原文' title='复制原文' onClick={() => { try { (window.desktopApi as any).copyText?.(selectedText, {silent: true}); } catch(_) {} }}><SkillIcon iconKey='copy' /></button>
+              <button
+                className='copy-inline'
+                aria-label='复制原文'
+                title='复制原文'
+                onClick={() => {
+                  try { void (window.desktopApi as any).copyText?.(selectedText, { silent: true }) } catch (_) {}
+                }}
+              >
+                <SkillIcon iconKey='copy' />
+              </button>
             </div>
             <p className='source-text'>{selectedText}</p>
           </section>
@@ -191,10 +365,16 @@ export function ResultCardChrome({
           {statusLine ? <div className='status-line'>{statusLine}</div> : null}
         </div>
 
-        <button className={'scroll-down-hint' + (showScrollDown ? ' show' : '')} onClick={scrollToBottom} title='滚动到底部' aria-hidden={!showScrollDown} tabIndex={showScrollDown ? 0 : -1}>
-            <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round'>
-              <path d='M12 5v14' /><path d='m19 12-7 7-7-7' />
-            </svg>
+        <button
+          className={'scroll-down-hint' + (showScrollDown ? ' show' : '')}
+          onClick={scrollToBottom}
+          title='滚动到底部'
+          aria-hidden={!showScrollDown}
+          tabIndex={showScrollDown ? 0 : -1}
+        >
+          <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round'>
+            <path d='M12 5v14' /><path d='m19 12-7 7-7-7' />
+          </svg>
         </button>
       </div>
 
