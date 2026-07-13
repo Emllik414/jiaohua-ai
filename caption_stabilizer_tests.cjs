@@ -50,6 +50,12 @@ test('uses a short delay for terminal punctuation', () => {
   assert.equal(delay, 70);
 });
 
+test('holds one-word captions until the maximum wait', () => {
+  const state = createState({ hostname: 'www.youtube.com' });
+  state.pendingSince = 1000;
+  assert.equal(nextDelay(state, 'I', 1000), 600);
+});
+
 test('caps progressive caption waiting at the maximum delay', () => {
   const state = createState({ hostname: 'www.youtube.com' });
   state.pendingSince = 1000;
