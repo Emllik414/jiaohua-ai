@@ -9,14 +9,19 @@ function skillShortcutMenuPlugin(): Plugin {
     transform(code, id) {
       if (!id.replace(/\\/g, '/').endsWith('/src/App.tsx')) return null
 
+      // App.tsx may be checked out with CRLF on Windows. Normalize only the
+      // in-memory transform input so marker matching is independent of the
+      // developer's Git/autocrlf configuration. The source file on disk is
+      // not modified.
+      const normalizedCode = code.replace(/\r\n?/g, '\n')
       const opening = `          <div className={'skill-menu ' + menuSide} ref={menuRef} draggable={false} onMouseDown={(event) => event.stopPropagation()}>`
       const closing = `\n          </div>\n        ) : null}`
-      const start = code.indexOf(opening)
+      const start = normalizedCode.indexOf(opening)
       if (start < 0) {
         throw new Error('[skill-shortcut-menu] cannot find the skill menu opening marker in src/App.tsx')
       }
       const contentStart = start + opening.length
-      const end = code.indexOf(closing, contentStart)
+      const end = normalizedCode.indexOf(closing, contentStart)
       if (end < 0) {
         throw new Error('[skill-shortcut-menu] cannot find the skill menu closing marker in src/App.tsx')
       }
@@ -39,7 +44,7 @@ function skillShortcutMenuPlugin(): Plugin {
             ) : null}`
 
       return {
-        code: code.slice(0, contentStart) + menuItems + code.slice(end),
+        code: normalizedCode.slice(0, contentStart) + menuItems + normalizedCode.slice(end),
         map: null,
       }
     },
