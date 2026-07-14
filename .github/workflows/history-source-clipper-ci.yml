@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feature/history-source-obsidian-clipper
+  pull_request:
+    branches:
+      - feature/caption-drag-pronunciation-live
   workflow_dispatch:
 
 permissions:
