@@ -42,16 +42,23 @@ function selectionTitle(record) {
   return text.length > 54 ? `${text.slice(0, 53)}…` : (text || 'AI 划词记录');
 }
 
+function compactSourceTitle(location, site) {
+  const title = String(location?.title || '').replace(/\s+/g, ' ').trim();
+  const value = title || site || '打开来源';
+  return markdownEscapeInline(value.length > 64 ? `${value.slice(0, 63)}…` : value);
+}
+
 function buildSourceLine(record) {
   const location = record?.sourceLocation;
   if (!location?.url) return '';
   const site = markdownEscapeInline(location.siteName || sourceSiteName(location));
+  const title = compactSourceTitle(location, site);
   const time = location.videoTime || formatVideoTime(location?.video?.currentTime);
   const icon = location.faviconVaultPath
     ? `![[${location.faviconVaultPath}|16]]`
     : (location.icon || sourceIcon(location));
   const deepLink = location.deepLink || `jiaohua://source/${encodeURIComponent(String(record.id || ''))}`;
-  return `> [!source] ${icon} ${site} · [回到原处](${deepLink})${time ? ` · ${time}` : ''}`;
+  return `> [!source] ${icon} ${site} · [${title}](${deepLink})${time ? ` · ${time}` : ''}`;
 }
 
 function buildClipperContext(record) {
@@ -139,6 +146,7 @@ module.exports = {
   CLIPPER_TEMPLATE_ID,
   CLIPPER_TEMPLATE,
   selectionTitle,
+  compactSourceTitle,
   buildSourceLine,
   buildClipperContext,
   renderTemplate,
