@@ -191,7 +191,7 @@ async function fetchWithRetry(originalFetch, input, init, options = {}) {
 }
 
 async function consumeSseResponse(response, handlers, options = {}) {
-  if (!response?.body) return { doneMarker: false, text: '' };
+  if (!response?.body) throw new Error('AI stream response has no body');
   const signal = options.signal;
   const idleTimeoutMs = options.idleTimeoutMs || DEFAULT_IDLE_TIMEOUT_MS;
   const reader = response.body.getReader();
@@ -253,8 +253,22 @@ function createResilientSseResponse(originalFetch, input, init, initialResponse,
     async start(controller) {
       let emittedText = '';
       let response = initialResponse;
-      let retry = 0;
+      let retryCount = 0;
       let continuationMode = false;
+
+      const finishWithPartialOrError = (error) => {
+        if (emittedText) {
+          console.warn('[StreamResilience] retries exhausted; preserving partial answer', {
+            retries: retryCount,
+            length: emittedText.length,
+            error: String(error?.message || error),
+          });
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        } else {
+          controller.error(error);
+        }
+      };
 
       const emit = (delta) => {
         if (!delta) return;
@@ -265,7 +279,7 @@ function createResilientSseResponse(originalFetch, input, init, initialResponse,
       while (true) {
         let continuationText = '';
         try {
-          const result = await consumeSseResponse(response, {
+          await consumeSseResponse(response, {
             onDelta(delta) {
               if (continuationMode) continuationText += delta;
               else emit(delta);
@@ -284,59 +298,58 @@ function createResilientSseResponse(originalFetch, input, init, initialResponse,
             return;
           }
           const transient = isTransientNetworkError(error) || error?.code === 'STREAM_IDLE_TIMEOUT';
-          if (!transient || retry >= maxRetries) {
-            if (emittedText) {
-              console.warn('[StreamResilience] retries exhausted; preserving partial answer', {
-                retries: retry,
-                length: emittedText.length,
-                error: String(error?.message || error),
-              });
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-              controller.close();
-            } else {
-              controller.error(error);
-            }
+          if (!transient) {
+            finishWithPartialOrError(error);
             return;
           }
         }
 
-        await wait(retryDelay(retry), signal).catch((error) => {
-          throw error;
-        });
-        retry += 1;
-        continuationMode = emittedText.length > 0;
-        const nextBody = continuationMode
-          ? buildContinuationBody(originalBody, emittedText)
-          : originalBody;
-        const nextInit = cloneInit(init, nextBody);
-        try {
-          response = await fetchWithRetry(originalFetch, input, nextInit, { maxRetries: 0 });
-          if (!response.ok || !response.body) {
-            const statusError = new Error(`AI stream reconnect failed: HTTP ${response.status}`);
-            statusError.code = isTransientStatus(response.status) ? 'STREAM_RETRYABLE_STATUS' : 'STREAM_FATAL_STATUS';
-            throw statusError;
-          }
-          console.warn('[StreamResilience] AI stream reconnected', {
-            retry,
-            continuation: continuationMode,
-            preservedLength: emittedText.length,
-          });
-        } catch (error) {
-          if (isAbortError(error, signal)) {
-            controller.error(error);
-            return;
-          }
-          if (retry >= maxRetries) {
-            if (emittedText) {
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-              controller.close();
-            } else {
-              controller.error(error);
+        let reconnected = false;
+        let lastReconnectError = null;
+        while (!reconnected && retryCount < maxRetries) {
+          try {
+            await wait(retryDelay(retryCount), signal);
+            retryCount += 1;
+            continuationMode = emittedText.length > 0;
+            const nextBody = continuationMode
+              ? buildContinuationBody(originalBody, emittedText)
+              : originalBody;
+            const nextInit = cloneInit(init, nextBody);
+            const nextResponse = await originalFetch(input, nextInit);
+            if (!nextResponse.ok || !nextResponse.body) {
+              const statusError = new Error(`AI stream reconnect failed: HTTP ${nextResponse.status}`);
+              statusError.code = isTransientStatus(nextResponse.status) ? 'STREAM_RETRYABLE_STATUS' : 'STREAM_FATAL_STATUS';
+              if (!isTransientStatus(nextResponse.status)) {
+                finishWithPartialOrError(statusError);
+                return;
+              }
+              lastReconnectError = statusError;
+              try { await nextResponse.body?.cancel?.(); } catch (_) {}
+              continue;
             }
-            return;
+            response = nextResponse;
+            reconnected = true;
+            console.warn('[StreamResilience] AI stream reconnected', {
+              retry: retryCount,
+              continuation: continuationMode,
+              preservedLength: emittedText.length,
+            });
+          } catch (error) {
+            if (isAbortError(error, signal)) {
+              controller.error(error);
+              return;
+            }
+            lastReconnectError = error;
+            if (!isTransientNetworkError(error)) {
+              finishWithPartialOrError(error);
+              return;
+            }
           }
-          response = null;
-          continue;
+        }
+
+        if (!reconnected) {
+          finishWithPartialOrError(lastReconnectError || new Error('AI stream reconnect failed'));
+          return;
         }
       }
     },
