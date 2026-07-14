@@ -1,0 +1,47 @@
+name: History Source Clipper CI
+
+on:
+  push:
+    branches:
+      - feature/history-source-obsidian-clipper
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax checks
+        run: |
+          node --check electron/source-location.cjs
+          node --check electron/obsidian-clipper.cjs
+          node --check electron/source-restore-bridge.cjs
+          node --check electron/source-obsidian-runtime.cjs
+          node --check electron/source-clipper-bootstrap.cjs
+          node --check electron/history-export.cjs
+          node --check browser-extension/source-location-capture.js
+          node --check browser-extension/background.js
+
+      - name: Source and Obsidian tests
+        run: node --test source_location_tests.cjs obsidian_clipper_tests.cjs source_restore_tests.cjs source_runtime_tests.cjs
+
+      - name: Existing feature regression tests
+        run: node --test pronunciation_history_tests.cjs pronunciation_live_tests.cjs caption_stability_v2_tests.cjs skill_shortcut_tests.cjs
+
+      - name: Build
+        run: npm run build
