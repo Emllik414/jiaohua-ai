@@ -54,8 +54,20 @@ jobs:
       - name: Pronunciation live regression
         run: node --test pronunciation_live_tests.cjs
 
-      - name: Caption stability regression
-        run: node --test caption_stability_v2_tests.cjs
-
       - name: Skill shortcut regression
         run: node --test skill_shortcut_tests.cjs
+
+  caption-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Caption stability regression
+        run: node --test caption_stability_v2_tests.cjs
