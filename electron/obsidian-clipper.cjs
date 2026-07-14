@@ -22,15 +22,6 @@ const CLIPPER_TEMPLATE = {
     '> {{selection}}',
     '',
     '{{ai_result}}',
-    '',
-    '<details>',
-    '<summary>详细来源信息</summary>',
-    '',
-    '- 网页：{{source_title}}',
-    '- 链接：[打开原始来源]({{source_url}})',
-    '- 技能：{{skill_name}}',
-    '- 记录：{{captured_at}}',
-    '</details>',
   ].join('\n'),
 };
 
