@@ -9,6 +9,10 @@ const {
   nextCommitDelay,
   trimDisplayWindow,
   layoutCaption,
+  computeContainedVideoRect,
+  clampBottomRatio,
+  bottomRatioToPlayerBottom,
+  dragBottomRatio,
 } = require('./browser-extension/caption-stability-v2.js');
 
 test('normalizes whitespace without changing punctuation', () => {
@@ -82,4 +86,33 @@ test('keeps short captions on one line', () => {
   const result = layoutCaption('Thank you.', { maxWidth: 40 });
   assert.equal(result.display, 'Thank you.');
   assert.equal(result.breakIndex, null);
+});
+
+test('calculates actual video content when the element has side bars', () => {
+  const rect = { left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 };
+  const content = computeContainedVideoRect(rect, 4, 3);
+  assert.equal(Math.round(content.width), 667);
+  assert.equal(Math.round(content.left), 167);
+  assert.equal(content.height, 500);
+});
+
+test('vertical dragging changes only the bottom ratio', () => {
+  const initial = 0.2;
+  assert.equal(dragBottomRatio(initial, 40, 400, 40), 0.1);
+  assert.ok(Math.abs(dragBottomRatio(initial, -40, 400, 40) - 0.3) < 1e-9);
+});
+
+test('zoom keeps the same relative vertical position', () => {
+  const playerA = { bottom: 800 };
+  const contentA = { bottom: 800, height: 600 };
+  const playerB = { bottom: 600 };
+  const contentB = { bottom: 600, height: 450 };
+  const ratio = 0.12;
+  assert.equal(bottomRatioToPlayerBottom(ratio, contentA, playerA), 72);
+  assert.equal(bottomRatioToPlayerBottom(ratio, contentB, playerB), 54);
+});
+
+test('clamps captions so the whole block remains inside the video', () => {
+  assert.equal(clampBottomRatio(-1, 500, 50), 0.03);
+  assert.ok(clampBottomRatio(1, 500, 100) <= 0.76);
 });
