@@ -14,6 +14,15 @@ if (!hasSingleInstanceLock) {
     console.error('[StreamResilience] install failed; core application continues', error);
   }
 
+  // Intercept the later Obsidian IPC registrations before source-obsidian-runtime
+  // captures ipcMain.handle. This keeps all source features while replacing only
+  // the slow single/batch import handlers with the transactional fast engine.
+  try {
+    require('./obsidian-import-performance-runtime.cjs').install();
+  } catch (error) {
+    console.error('[ObsidianImportFast] install failed; legacy import remains available', error);
+  }
+
   // Obsidian source links now use direct http/https URLs. Remove the obsolete
   // custom protocol association and prevent older runtime code from restoring it.
   try { app.removeAsDefaultProtocolClient('jiaohua'); } catch (_) {}
