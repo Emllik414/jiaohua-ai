@@ -10,11 +10,18 @@ const {
   buildOpenUrl,
 } = require('./source-location.cjs');
 const {
-  ensureClipperTemplate,
+  CLIPPER_TEMPLATE_ID,
+  IMPORT_INDEX_RELATIVE_PATH,
+  markClipperTemplateDismissed,
+  markClipperTemplateAvailable,
   buildClipperContext,
   renderClipperTemplate,
   resolveTargetPath,
-  containsRecord,
+  extractRecordIds,
+  stripRecordMarkers,
+  normalizeImportIndex,
+  hasImportedRecord,
+  markImportedRecord,
 } = require('./obsidian-clipper.cjs');
 
 let installed = false;
@@ -122,16 +129,6 @@ function updateHistoryRecord(app, BrowserWindow, recordId, updater) {
   return updatedRecord;
 }
 
-function ensureStartupTemplate(app) {
-  const store = readStore(app);
-  if (!store) return false;
-  const result = ensureClipperTemplate(store);
-  if (!result.changed) return false;
-  writeStore(app, result.store);
-  console.log('[SourceClipper] added compact Obsidian template');
-  return true;
-}
-
 function cleanHostFileName(hostname) {
   return String(hostname || 'website').toLowerCase().replace(/[^a-z0-9._-]+/g, '_').slice(0, 120) || 'website';
 }
@@ -198,6 +195,36 @@ function enrichRecordFromLatestSource(record) {
   return snapshot ? attachRecordLinks(record, snapshot) : record;
 }
 
+function importIndexFile(vaultPath) {
+  return path.join(vaultPath, ...IMPORT_INDEX_RELATIVE_PATH.split('/'));
+}
+
+function readImportIndex(vaultPath) {
+  try {
+    return normalizeImportIndex(JSON.parse(fs.readFileSync(importIndexFile(vaultPath), 'utf8')));
+  } catch (_) {
+    return normalizeImportIndex(null);
+  }
+}
+
+function writeImportIndex(vaultPath, index) {
+  const file = importIndexFile(vaultPath);
+  const temporary = `${file}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(temporary, JSON.stringify(normalizeImportIndex(index), null, 2), 'utf8');
+  fs.renameSync(temporary, file);
+}
+
+function migrateTargetMarkers(vaultPath, target, relativePath, existing, index) {
+  const ids = extractRecordIds(existing);
+  const cleaned = stripRecordMarkers(existing);
+  let nextIndex = normalizeImportIndex(index);
+  for (const id of ids) nextIndex = markImportedRecord(nextIndex, id, relativePath);
+  if (cleaned !== existing) fs.writeFileSync(target, cleaned, 'utf8');
+  if (ids.length > 0) writeImportIndex(vaultPath, nextIndex);
+  return { existing: cleaned, index: nextIndex, migratedIds: ids };
+}
+
 async function saveClipToObsidian(app, BrowserWindow, payload) {
   const request = payload || {};
   const store = readStore(app);
@@ -210,12 +237,17 @@ async function saveClipToObsidian(app, BrowserWindow, payload) {
   const vaultPath = String(store.settings?.obsidian?.vaultPath || '').trim();
   if (!vaultPath) throw new Error('还没有设置 Obsidian vault 路径。');
 
-  let nextRecord = await ensureFavicon(vaultPath, record);
+  const nextRecord = await ensureFavicon(vaultPath, record);
   const context = buildClipperContext(nextRecord);
   const { target, relativePath } = resolveTargetPath(vaultPath, template, context);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  const existing = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
-  if (nextRecord.savedToObsidian || containsRecord(existing, nextRecord.id)) {
+
+  const rawExisting = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
+  const migrated = migrateTargetMarkers(vaultPath, target, relativePath, rawExisting, readImportIndex(vaultPath));
+  const existing = migrated.existing;
+  const index = migrated.index;
+
+  if (nextRecord.savedToObsidian || hasImportedRecord(index, nextRecord.id)) {
     const error = new Error('该记录已经导入 Obsidian。');
     error.code = 'DUPLICATE_RECORD';
     throw error;
@@ -228,6 +260,7 @@ async function saveClipToObsidian(app, BrowserWindow, payload) {
   } else {
     fs.writeFileSync(target, `${existing}${separator}${markdown}\n`, 'utf8');
   }
+  writeImportIndex(vaultPath, markImportedRecord(index, nextRecord.id, relativePath));
 
   const persistedRecord = updateHistoryRecord(app, BrowserWindow, nextRecord.id, (item) => ({
     ...item,
@@ -283,45 +316,18 @@ async function saveManyClips(app, BrowserWindow, payload) {
   };
 }
 
-function protocolRecordId(value) {
-  try {
-    const url = new URL(String(value || ''));
-    if (url.protocol !== 'jiaohua:') return '';
-    const segments = [url.hostname, ...url.pathname.split('/')].filter(Boolean);
-    const sourceIndex = segments.indexOf('source');
-    const raw = sourceIndex >= 0 ? segments[sourceIndex + 1] : segments[segments.length - 1];
-    return decodeURIComponent(raw || '');
-  } catch (_) {
-    return '';
-  }
-}
-
-function installProtocol(app, shell) {
-  try { app.setAsDefaultProtocolClient('jiaohua'); } catch (_) {}
-  const openProtocol = (value) => {
-    const recordId = protocolRecordId(value);
-    if (!recordId) return false;
-    const record = readStore(app)?.history?.find((item) => String(item.id) === String(recordId));
-    const target = buildOpenUrl(record?.sourceLocation);
-    if (target) void shell.openExternal(target);
-    return Boolean(target);
-  };
-  app.on('open-url', (event, url) => { event.preventDefault(); openProtocol(url); });
-  app.on('second-instance', (_event, argv) => {
-    const protocolArg = (argv || []).find((arg) => String(arg).startsWith('jiaohua://'));
-    if (protocolArg) openProtocol(protocolArg);
-  });
-  app.whenReady().then(() => {
-    const protocolArg = process.argv.find((arg) => String(arg).startsWith('jiaohua://'));
-    if (protocolArg) openProtocol(protocolArg);
-  });
-}
-
 function patchResultWithSource(app, BrowserWindow, result, snapshot) {
   if (!result || !result.id || !snapshot) return result;
   const patched = attachRecordLinks(result, snapshot);
   updateHistoryRecord(app, BrowserWindow, result.id, (record) => ({ ...record, sourceLocation: patched.sourceLocation }));
   return patched;
+}
+
+function updateBundledTemplateState(app, updater) {
+  const store = readStore(app);
+  if (!store) return;
+  const next = updater(store);
+  if (next !== store) writeStore(app, next);
 }
 
 function install() {
@@ -382,6 +388,28 @@ function install() {
       });
     }
 
+    if (channel === 'obsidian:templates:delete') {
+      return registerHandler(channel, async (...args) => {
+        const templateId = args?.[1];
+        const result = await listener(...args);
+        if (String(templateId || '') === CLIPPER_TEMPLATE_ID) {
+          updateBundledTemplateState(app, markClipperTemplateDismissed);
+        }
+        return result;
+      });
+    }
+
+    if (channel === 'obsidian:templates:save') {
+      return registerHandler(channel, async (...args) => {
+        const template = args?.[1];
+        const result = await listener(...args);
+        if (String(template?.id || '') === CLIPPER_TEMPLATE_ID) {
+          updateBundledTemplateState(app, markClipperTemplateAvailable);
+        }
+        return result;
+      });
+    }
+
     if (channel === 'obsidian:template:preview') {
       return registerHandler(channel, (_event, payload) => previewClip(app, payload));
     }
@@ -395,8 +423,10 @@ function install() {
     return registerHandler(channel, listener);
   };
 
-  installProtocol(app, shell);
-  app.whenReady().then(() => ensureStartupTemplate(app));
+  app.whenReady().then(() => {
+    // The old jiaohua:// route is no longer used by Obsidian notes.
+    try { app.removeAsDefaultProtocolClient('jiaohua'); } catch (_) {}
+  });
   console.log('[SourceClipper] installed');
 }
 
@@ -404,6 +434,9 @@ module.exports = {
   install,
   parseSelectionBody,
   sourceSnapshotForSelection,
-  protocolRecordId,
+  importIndexFile,
+  readImportIndex,
+  writeImportIndex,
+  migrateTargetMarkers,
   patchResultWithSource,
 };
