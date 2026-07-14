@@ -92,41 +92,93 @@ async function injectTab(tabId) {
   }
 }
 
-async function ensureTab(tab) {
-  if (!tab?.id || !isInjectableUrl(tab.url)) return;
-  const alive = await pingTab(tab.id);
-  if (!alive) await injectTab(tab.id);
+async function ensureTabAlive(tabId, url) {
+  if (!tabId || !isInjectableUrl(url)) return false;
+  if (await pingTab(tabId)) return true;
+  if (!(await injectTab(tabId))) return false;
+
+  // executeScript resolves after injection; ping once more to verify the
+  // content script really started instead of assuming success.
+  const alive = await pingTab(tabId);
+  if (!alive) {
+    console.warn('[AISel-BG] content script did not answer after injection', tabId);
+  }
+  return alive;
 }
 
-async function scanTabs() {
-  const tabs = await chrome.tabs.query({});
-  await Promise.all(tabs.map(ensureTab));
+async function scanAllTabs() {
+  try {
+    const tabs = await chrome.tabs.query({
+      url: ['http://*/*', 'https://*/*'],
+    });
+    await Promise.allSettled(
+      tabs
+        .filter((tab) => tab.id && tab.url && isInjectableUrl(tab.url))
+        .map((tab) => ensureTabAlive(tab.id, tab.url)),
+    );
+  } catch (error) {
+    console.warn('[AISel-BG] scan tabs failed', error?.message || error);
+  }
+}
+
+async function ensureAlarm() {
+  try {
+    const alarm = await chrome.alarms.get(ALARM_NAME);
+    if (!alarm) {
+      chrome.alarms.create(ALARM_NAME, {
+        periodInMinutes: ALARM_PERIOD_MINUTES,
+      });
+    }
+  } catch (error) {
+    console.warn('[AISel-BG] alarm setup failed', error?.message || error);
+  }
+}
+
+async function initialize(reason) {
+  console.log(`[AISel-BG] initialize ${reason} v${VERSION}`);
+  await ensureAlarm();
+  await scanAllTabs();
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(ALARM_NAME, { periodInMinutes: ALARM_PERIOD_MINUTES });
-  void scanTabs();
+  initialize('installed').catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(ALARM_NAME, { periodInMinutes: ALARM_PERIOD_MINUTES });
-  void scanTabs();
+  initialize('startup').catch(() => {});
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === ALARM_NAME) void scanTabs();
-});
-
-chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete') void ensureTab(tab);
-});
-
-chrome.webNavigation.onCommitted.addListener((details) => {
-  if (details.frameId === 0) {
-    chrome.tabs.get(details.tabId).then(ensureTab).catch(() => {});
+  if (alarm.name === ALARM_NAME) {
+    scanAllTabs().catch(() => {});
   }
 });
 
-void scanTabs();
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' && tab.url && isInjectableUrl(tab.url)) {
+    ensureTabAlive(tabId, tab.url).catch(() => {});
+  }
+});
 
-console.log('[AISel-BG] service worker', VERSION);
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.url && isInjectableUrl(tab.url)) {
+      await ensureTabAlive(tabId, tab.url);
+    }
+  } catch (_) {}
+});
+
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (details.frameId === 0 && isInjectableUrl(details.url)) {
+    ensureTabAlive(details.tabId, details.url).catch(() => {});
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  aliveTabs.delete(tabId);
+});
+
+// Also run once whenever Edge/Chrome wakes this service worker after reload.
+initialize('worker-wakeup').catch(() => {});
+console.log(`[AISel-BG] ready v${VERSION}`);
