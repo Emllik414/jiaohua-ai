@@ -40,6 +40,14 @@ test('builds YouTube and Bilibili seek links with lead-in', () => {
   });
   assert.equal(new URL(youtube).searchParams.get('t'), '510s');
 
+  const exactYoutube = buildOpenUrl({
+    type: 'subtitle',
+    url: 'https://www.youtube.com/watch?v=abc',
+    hostname: 'www.youtube.com',
+    video: { platform: 'youtube', currentTime: 512.4 },
+  }, { leadSeconds: 0 });
+  assert.equal(new URL(exactYoutube).searchParams.get('t'), '512s');
+
   const bilibili = buildOpenUrl({
     type: 'subtitle',
     url: 'https://www.bilibili.com/video/BV1xx',
@@ -82,14 +90,14 @@ test('normalizes source location and limits context size', () => {
   assert.equal(new URL(result.url).searchParams.has('utm_campaign'), false);
 });
 
-test('attaches record-specific deep and open links', () => {
+test('attaches a browser open link without a custom protocol deep link', () => {
   const record = attachRecordLinks({ id: 'record 1', selectedText: 'hello' }, {
     type: 'web',
     url: 'https://example.com',
     hostname: 'example.com',
     anchor: { selectedText: 'hello' },
   });
-  assert.equal(record.sourceLocation.deepLink, 'jiaohua://source/record%201');
+  assert.equal(Object.hasOwn(record.sourceLocation, 'deepLink'), false);
   assert.match(record.sourceLocation.openUrl, /^https:\/\/example\.com/);
   assert.equal(record.sourceLocation.siteName, 'example.com');
 });
