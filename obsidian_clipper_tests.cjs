@@ -64,13 +64,15 @@ test('builds full template variable context', () => {
   assert.match(context.source_line, /回到原处/);
 });
 
-test('renders compact clip with hidden details and marker', () => {
+test('renders only title, source, selection and answer', () => {
   const markdown = renderClipperTemplate(CLIPPER_TEMPLATE, sampleRecord());
   assert.match(markdown, new RegExp(recordMarker('rec-1')));
   assert.match(markdown, /^## out of the blue/m);
+  assert.match(markdown, /\[!source\]/);
   assert.match(markdown, /> out of the blue/);
-  assert.match(markdown, /<details>/);
   assert.match(markdown, /突然地/);
+  assert.doesNotMatch(markdown, /<details>/);
+  assert.doesNotMatch(markdown, /使用模型|创建时间|来源信息/);
 });
 
 test('adds clipper template only once', () => {
