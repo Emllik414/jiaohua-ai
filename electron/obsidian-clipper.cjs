@@ -5,6 +5,7 @@ const {
   sourceSiteName,
   sourceIcon,
   formatVideoTime,
+  buildOpenUrl,
 } = require('./source-location.cjs');
 
 const CLIPPER_TEMPLATE_ID = 'jiaohua_clipper_compact';
@@ -14,7 +15,7 @@ const CLIPPER_TEMPLATE = {
   saveBehavior: 'append_to_existing_note_bottom',
   targetNotePath: 'AI划词/学习剪藏.md',
   contentTemplate: [
-    '<!-- jiaohua-record:{{record_id}} -->',
+    '%% jiaohua-record:{{record_id}} %%',
     '## {{selection_title}}',
     '',
     '{{source_line}}',
@@ -24,6 +25,36 @@ const CLIPPER_TEMPLATE = {
     '{{ai_result}}',
   ].join('\n'),
 };
+
+const TEMPLATE_VARIABLE_KEYS = [
+  'record_id',
+  'selection',
+  'selection_short',
+  'selection_title',
+  'ai_result',
+  'answer',
+  'skill_name',
+  'skill_id',
+  'model',
+  'date',
+  'time',
+  'captured_at',
+  'source_app',
+  'source_type',
+  'source_site',
+  'source_title',
+  'source_title_yaml',
+  'source_url',
+  'source_open_url',
+  'source_host',
+  'source_icon',
+  'source_favicon',
+  'source_line',
+  'video_time',
+  'video_seconds',
+  'selection_context',
+  'history_space',
+];
 
 function pad2(value) {
   return String(value).padStart(2, '0');
@@ -48,6 +79,10 @@ function compactSourceTitle(location, site) {
   return markdownEscapeInline(value.length > 64 ? `${value.slice(0, 63)}…` : value);
 }
 
+function sourceOpenUrl(location) {
+  return buildOpenUrl(location, { leadSeconds: 0 });
+}
+
 function buildSourceLine(record) {
   const location = record?.sourceLocation;
   if (!location?.url) return '';
@@ -57,8 +92,10 @@ function buildSourceLine(record) {
   const icon = location.faviconVaultPath
     ? `![[${location.faviconVaultPath}|16]]`
     : (location.icon || sourceIcon(location));
-  const deepLink = location.deepLink || `jiaohua://source/${encodeURIComponent(String(record.id || ''))}`;
-  return `> [!source] ${icon} ${site} · [${title}](${deepLink})${time ? ` · ${time}` : ''}`;
+  const openUrl = sourceOpenUrl(location);
+  return openUrl
+    ? `> [!source] ${icon} ${site} · [${title}](${openUrl})${time ? ` · ${time}` : ''}`
+    : `> [!source] ${icon} ${site}${time ? ` · ${time}` : ''}`;
 }
 
 function buildClipperContext(record) {
@@ -66,6 +103,7 @@ function buildClipperContext(record) {
   const location = record?.sourceLocation || {};
   const captured = new Date(location.capturedAt || record?.createdAt || Date.now());
   const sourceUrl = location.normalizedUrl || location.url || '';
+  const openUrl = sourceOpenUrl(location);
   const videoSeconds = Number(location?.video?.currentTime);
   const videoTime = location.videoTime || formatVideoTime(videoSeconds);
   const selected = String(record?.selectedText || '');
@@ -88,7 +126,7 @@ function buildClipperContext(record) {
     source_title: String(location.title || record?.windowTitle || ''),
     source_title_yaml: yamlEscape(location.title || record?.windowTitle || ''),
     source_url: String(sourceUrl),
-    source_deep_link: String(location.deepLink || ''),
+    source_open_url: String(openUrl),
     source_host: String(location.hostname || ''),
     source_icon: String(location.icon || sourceIcon(location)),
     source_favicon: String(location.faviconVaultPath || ''),
@@ -108,18 +146,39 @@ function renderClipperTemplate(template, record) {
   return renderTemplate(template.contentTemplate, buildClipperContext(record));
 }
 
+function migrateBuiltInTemplate(template) {
+  if (!template || template.id !== CLIPPER_TEMPLATE_ID) return { template, changed: false };
+  let contentTemplate = String(template.contentTemplate || '');
+  contentTemplate = contentTemplate
+    .replace(/<!--\s*jiaohua-record:\{\{record_id\}\}\s*-->/g, '%% jiaohua-record:{{record_id}} %%')
+    .replace(/\{\{source_deep_link\}\}/g, '{{source_open_url}}');
+  if (contentTemplate === template.contentTemplate) return { template, changed: false };
+  return {
+    changed: true,
+    template: { ...template, contentTemplate, updatedAt: new Date().toISOString() },
+  };
+}
+
 function ensureClipperTemplate(store) {
   if (!store || typeof store !== 'object') return { store, changed: false };
   const templates = Array.isArray(store.obsidianTemplates) ? store.obsidianTemplates : [];
-  if (templates.some((template) => template.id === CLIPPER_TEMPLATE_ID)) {
-    return { store, changed: false };
+  let changed = false;
+  let found = false;
+  const migrated = templates.map((template) => {
+    if (template?.id !== CLIPPER_TEMPLATE_ID) return template;
+    found = true;
+    const result = migrateBuiltInTemplate(template);
+    if (result.changed) changed = true;
+    return result.template;
+  });
+  if (!found) {
+    const now = new Date().toISOString();
+    migrated.push({ ...CLIPPER_TEMPLATE, createdAt: now, updatedAt: now });
+    changed = true;
   }
-  const now = new Date().toISOString();
-  const template = { ...CLIPPER_TEMPLATE, createdAt: now, updatedAt: now };
-  return {
-    changed: true,
-    store: { ...store, obsidianTemplates: [...templates, template] },
-  };
+  return changed
+    ? { changed: true, store: { ...store, obsidianTemplates: migrated } }
+    : { changed: false, store };
 }
 
 function resolveTargetPath(vaultPath, template, context) {
@@ -135,24 +194,41 @@ function resolveTargetPath(vaultPath, template, context) {
 }
 
 function recordMarker(recordId) {
+  return `%% jiaohua-record:${String(recordId || '')} %%`;
+}
+
+function legacyRecordMarker(recordId) {
   return `<!-- jiaohua-record:${String(recordId || '')} -->`;
 }
 
+function migrateLegacyRecordMarkers(existing) {
+  return String(existing || '').replace(
+    /<!--\s*jiaohua-record:([^>]+?)\s*-->/g,
+    (_match, recordId) => recordMarker(String(recordId || '').trim()),
+  );
+}
+
 function containsRecord(existing, recordId) {
-  return String(existing || '').includes(recordMarker(recordId));
+  const text = String(existing || '');
+  return text.includes(recordMarker(recordId)) || text.includes(legacyRecordMarker(recordId));
 }
 
 module.exports = {
   CLIPPER_TEMPLATE_ID,
   CLIPPER_TEMPLATE,
+  TEMPLATE_VARIABLE_KEYS,
   selectionTitle,
   compactSourceTitle,
+  sourceOpenUrl,
   buildSourceLine,
   buildClipperContext,
   renderTemplate,
   renderClipperTemplate,
+  migrateBuiltInTemplate,
   ensureClipperTemplate,
   resolveTargetPath,
   recordMarker,
+  legacyRecordMarker,
+  migrateLegacyRecordMarkers,
   containsRecord,
 };
