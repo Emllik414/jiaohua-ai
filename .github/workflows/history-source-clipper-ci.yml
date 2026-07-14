@@ -45,8 +45,17 @@ jobs:
       - name: Source, Obsidian, and export tests
         run: node --test source_location_tests.cjs obsidian_clipper_tests.cjs source_restore_tests.cjs source_runtime_tests.cjs history_export_source_tests.cjs
 
-      - name: Existing feature regression tests
-        run: node --test pronunciation_history_tests.cjs pronunciation_live_tests.cjs caption_stability_v2_tests.cjs skill_shortcut_tests.cjs
-
       - name: Build
         run: npm run build
+
+      - name: Pronunciation history regression
+        run: node --test pronunciation_history_tests.cjs
+
+      - name: Pronunciation live regression
+        run: node --test pronunciation_live_tests.cjs
+
+      - name: Caption stability regression
+        run: node --test caption_stability_v2_tests.cjs
+
+      - name: Skill shortcut regression
+        run: node --test skill_shortcut_tests.cjs
