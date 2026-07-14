@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   parseSelectionBody,
-  protocolRecordId,
+  sourceSnapshotForSelection,
 } = require('./electron/source-obsidian-runtime.cjs');
 
 test('parses browser selection payloads', () => {
@@ -20,8 +20,6 @@ test('rejects invalid selection JSON', () => {
   assert.equal(parseSelectionBody('null'), null);
 });
 
-test('extracts record ids from Obsidian deep links', () => {
-  assert.equal(protocolRecordId('jiaohua://source/rec-123'), 'rec-123');
-  assert.equal(protocolRecordId('jiaohua://source/record%20one'), 'record one');
-  assert.equal(protocolRecordId('https://example.com/source/rec-123'), '');
+test('does not return a source snapshot before browser selection capture', () => {
+  assert.equal(sourceSnapshotForSelection('not captured'), null);
 });
