@@ -6,6 +6,14 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
+  // Install before main.cjs is loaded so all AI streaming fetch calls receive
+  // transient-network retry, idle detection, continuation, and partial preservation.
+  try {
+    require('./stream-resilience.cjs').install();
+  } catch (error) {
+    console.error('[StreamResilience] install failed; core application continues', error);
+  }
+
   // Obsidian source links now use direct http/https URLs. Remove the obsolete
   // custom protocol association and prevent older runtime code from restoring it.
   try { app.removeAsDefaultProtocolClient('jiaohua'); } catch (_) {}
