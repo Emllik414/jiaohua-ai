@@ -144,6 +144,31 @@ ${answerFormatMarker}`
       if (!next.includes(oldImportMessage)) throw new Error('[source-location-ui] missing batch import message')
       next = next.replace(oldImportMessage, newImportMessage)
 
+      const previewContextMarker = `      source_app: 'Windows',\n      history_space: '',`
+      const previewContextReplacement = `      source_app: 'Chrome',
+      source_type: 'subtitle',
+      source_site: 'YouTube',
+      source_title: 'How to Speak English Naturally',
+      source_url: 'https://www.youtube.com/watch?v=example&t=512s',
+      source_deep_link: 'jiaohua://source/example-record',
+      source_host: 'youtube.com',
+      source_icon: '▶',
+      source_favicon: '.jiaohua/favicons/youtube.com.png',
+      source_line: '> [!source] ▶ YouTube · [How to Speak English Naturally](jiaohua://source/example-record) · 8:32',
+      video_time: '8:32',
+      video_seconds: '512',
+      selection_context: 'and then, completely out of the blue, he called me again',
+      captured_at: new Date().toLocaleString('zh-CN'),
+      record_id: 'example-record',
+      history_space: '',`
+      if (!next.includes(previewContextMarker)) throw new Error('[source-location-ui] missing Obsidian preview context marker')
+      next = next.replace(previewContextMarker, previewContextReplacement)
+
+      const tokenMarker = `['{{selection}}', '{{ai_result}}', '{{skill_name}}', '{{model}}', '{{date}}', '{{time}}', '{{source_app}}', '{{history_space}}']`
+      const tokenReplacement = `['{{selection}}', '{{ai_result}}', '{{source_line}}', '{{source_title}}', '{{source_url}}', '{{video_time}}', '{{skill_name}}', '{{date}}', '{{time}}', '{{record_id}}']`
+      if (!next.includes(tokenMarker)) throw new Error('[source-location-ui] missing Obsidian token marker')
+      next = next.replace(tokenMarker, tokenReplacement)
+
       const recordCardMarker = `function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSelect, onDelete, activeTtsKey, onToggleSpeak }:`
       const helpers = `function sourceLocationLabel(location?: SourceLocation) {
   if (!location) return ''
