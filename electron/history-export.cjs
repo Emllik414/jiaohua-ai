@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { Document, HeadingLevel, Packer, Paragraph, TextRun } = require('docx');
+const { Document, HeadingLevel, Packer, Paragraph, TextRun, ExternalHyperlink } = require('docx');
+const { buildOpenUrl, formatVideoTime, sourceSiteName } = require('./source-location.cjs');
 
 const FORMAT_EXTENSIONS = { markdown: '.md', word: '.docx', txt: '.txt' };
 
@@ -42,15 +43,29 @@ function stripMarkdown(value) {
     .replace(/(\*\*|__|~~|`)/g, '');
 }
 
+function sourceDetails(record) {
+  const location = record?.sourceLocation;
+  if (!location?.url) return null;
+  const url = buildOpenUrl(location, { leadSeconds: 0 }) || location.url;
+  const site = location.siteName || sourceSiteName(location);
+  const time = location.videoTime || formatVideoTime(location?.video?.currentTime);
+  const title = location.title || location.hostname || site;
+  return { url, site, time, title };
+}
+
 function renderMarkdown(records, title) {
   const lines = [`# ${title}`, '', `导出时间：${new Date().toLocaleString('zh-CN')}`, ''];
   records.forEach((record, index) => {
+    const source = sourceDetails(record);
     lines.push(
       `## ${recordTitle(record, index)}`,
       '',
       `- 时间：${new Date(record.createdAt).toLocaleString('zh-CN')}`,
       `- 模型：${record.model || '未知'}`,
       `- 来源：${record.sourceApp || 'Windows'}`,
+    );
+    if (source) lines.push(`- 原始位置：[${source.site} · ${source.title}${source.time ? ` · ${source.time}` : ''}](${source.url})`);
+    lines.push(
       '',
       '### 原文',
       '',
@@ -67,18 +82,21 @@ function renderMarkdown(records, title) {
 
 function renderText(records, title) {
   const divider = '='.repeat(64);
-  const sections = records.map((record, index) => [
-    recordTitle(record, index),
-    `时间：${new Date(record.createdAt).toLocaleString('zh-CN')}`,
-    `模型：${record.model || '未知'}`,
-    `来源：${record.sourceApp || 'Windows'}`,
-    '',
-    '原文：',
-    record.selectedText || '',
-    '',
-    'AI 结果：',
-    stripMarkdown(record.answerMarkdown),
-  ].join('\n'));
+  const sections = records.map((record, index) => {
+    const source = sourceDetails(record);
+    const lines = [
+      recordTitle(record, index),
+      `时间：${new Date(record.createdAt).toLocaleString('zh-CN')}`,
+      `模型：${record.model || '未知'}`,
+      `来源：${record.sourceApp || 'Windows'}`,
+    ];
+    if (source) {
+      lines.push(`原始位置：${source.site}${source.time ? ` · ${source.time}` : ''}`);
+      lines.push(`来源链接：${source.url}`);
+    }
+    lines.push('', '原文：', record.selectedText || '', '', 'AI 结果：', stripMarkdown(record.answerMarkdown));
+    return lines.join('\n');
+  });
   return [title, `导出时间：${new Date().toLocaleString('zh-CN')}`, divider, ...sections.flatMap((section) => [section, divider])].join('\n') + '\n';
 }
 
@@ -88,11 +106,22 @@ async function renderWord(records, title) {
     new Paragraph({ children: [new TextRun({ text: `导出时间：${new Date().toLocaleString('zh-CN')}`, color: '666666' })] }),
   ];
   records.forEach((record, index) => {
+    const source = sourceDetails(record);
     children.push(
       new Paragraph({ text: recordTitle(record, index), heading: HeadingLevel.HEADING_1 }),
       new Paragraph(`时间：${new Date(record.createdAt).toLocaleString('zh-CN')}`),
       new Paragraph(`模型：${record.model || '未知'}`),
       new Paragraph(`来源：${record.sourceApp || 'Windows'}`),
+    );
+    if (source) {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: `原始位置：${source.site}${source.time ? ` · ${source.time}` : ''}  ` }),
+          new ExternalHyperlink({ link: source.url, children: [new TextRun({ text: source.title || '打开来源', style: 'Hyperlink' })] }),
+        ],
+      }));
+    }
+    children.push(
       new Paragraph({ text: '原文', heading: HeadingLevel.HEADING_2 }),
       new Paragraph(record.selectedText || ''),
       new Paragraph({ text: 'AI 结果', heading: HeadingLevel.HEADING_2 }),
@@ -118,4 +147,4 @@ async function exportHistoryRecords({ records, format, fileName, directory }) {
   return target;
 }
 
-module.exports = { FORMAT_EXTENSIONS, sanitizeFileName, uniqueFilePath, stripMarkdown, renderMarkdown, renderText, renderWord, exportHistoryRecords };
+module.exports = { FORMAT_EXTENSIONS, sanitizeFileName, uniqueFilePath, stripMarkdown, sourceDetails, renderMarkdown, renderText, renderWord, exportHistoryRecords };
