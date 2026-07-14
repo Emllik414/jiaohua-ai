@@ -1,12 +1,16 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.0.0-source-location';
+  const VERSION = '1.1.0-source-location';
+  const RESTORE_ENDPOINT = 'http://127.0.0.1:17322/restore';
+  const TOKEN = 'aisel-local-bridge-v1';
   if (window.__JIAOHUA_SOURCE_LOCATION_CAPTURE__ === VERSION) return;
   window.__JIAOHUA_SOURCE_LOCATION_CAPTURE__ = VERSION;
 
   const originalFetch = window.fetch.bind(window);
   let lastAnchor = null;
+  let lastAppliedRestoreId = '';
+  let restorePolling = false;
 
   function normalizeText(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
@@ -211,6 +215,167 @@
     } catch (_) {}
     return originalFetch(input, init);
   };
+
+  function ensureRestoreStyles() {
+    if (document.getElementById('jiaohua-source-restore-style')) return;
+    const style = document.createElement('style');
+    style.id = 'jiaohua-source-restore-style';
+    style.textContent = `
+      ::highlight(jiaohua-source-highlight) {
+        background: rgba(255, 214, 74, .72);
+        color: inherit;
+      }
+      [data-jiaohua-source-flash="true"] {
+        outline: 3px solid rgba(255, 188, 50, .85) !important;
+        outline-offset: 5px !important;
+        border-radius: 4px !important;
+        transition: outline-color .7s ease !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function safeQuery(selector) {
+    if (!selector) return null;
+    try { return document.querySelector(selector); }
+    catch (_) { return null; }
+  }
+
+  function blockScore(element, anchor) {
+    const text = normalizeText(element?.innerText || element?.textContent || '').toLowerCase();
+    const selected = normalizeText(anchor?.selectedText || '').toLowerCase();
+    if (!selected || !text.includes(selected)) return -1;
+    let score = selected.length * 4;
+    const prefix = normalizeText(anchor?.prefixText || '').toLowerCase().slice(-48);
+    const suffix = normalizeText(anchor?.suffixText || '').toLowerCase().slice(0, 48);
+    if (prefix && text.includes(prefix)) score += 80;
+    if (suffix && text.includes(suffix)) score += 80;
+    score -= Math.min(100, Math.max(0, text.length - selected.length) / 10);
+    return score;
+  }
+
+  function findCandidateBlock(anchor) {
+    const fingerprint = safeQuery(anchor?.elementFingerprint);
+    if (fingerprint && blockScore(fingerprint, anchor) >= 0) return fingerprint;
+    const elements = Array.from(document.querySelectorAll('p, li, blockquote, td, th, h1, h2, h3, h4, article, section'));
+    let best = null;
+    let bestScore = -1;
+    for (const element of elements) {
+      const score = blockScore(element, anchor);
+      if (score > bestScore) { best = element; bestScore = score; }
+    }
+    return best;
+  }
+
+  function findTextRange(root, selectedText) {
+    const needle = normalizeText(selectedText).toLowerCase();
+    if (!root || !needle) return null;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || /^(SCRIPT|STYLE|NOSCRIPT|TEXTAREA|INPUT)$/i.test(parent.tagName)) return NodeFilter.FILTER_REJECT;
+        return normalizeText(node.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
+    let node;
+    while ((node = walker.nextNode())) {
+      const value = String(node.nodeValue || '');
+      const index = value.toLowerCase().indexOf(needle);
+      if (index >= 0) {
+        const range = document.createRange();
+        range.setStart(node, index);
+        range.setEnd(node, index + needle.length);
+        return range;
+      }
+    }
+    return null;
+  }
+
+  function flashElement(element) {
+    if (!element) return;
+    element.setAttribute('data-jiaohua-source-flash', 'true');
+    setTimeout(() => element.removeAttribute('data-jiaohua-source-flash'), 4500);
+  }
+
+  function highlightAnchor(anchor) {
+    const element = findCandidateBlock(anchor);
+    if (!element) return false;
+    element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    ensureRestoreStyles();
+    const range = findTextRange(element, anchor?.selectedText || '');
+    if (range && window.CSS?.highlights && typeof window.Highlight === 'function') {
+      try {
+        CSS.highlights.set('jiaohua-source-highlight', new Highlight(range));
+        setTimeout(() => CSS.highlights.delete('jiaohua-source-highlight'), 5000);
+        return true;
+      } catch (_) {}
+    }
+    flashElement(element);
+    return true;
+  }
+
+  function restoreScrollRatio(anchor) {
+    const ratio = Number(anchor?.scrollRatio);
+    if (!Number.isFinite(ratio)) return false;
+    const documentHeight = Math.max(
+      document.documentElement?.scrollHeight || 0,
+      document.body?.scrollHeight || 0,
+      window.innerHeight || 0,
+    );
+    const maxScroll = Math.max(0, documentHeight - window.innerHeight);
+    window.scrollTo({ top: maxScroll * Math.max(0, Math.min(1, ratio)), behavior: 'smooth' });
+    return true;
+  }
+
+  function restoreVideo(sourceLocation, attempt) {
+    const video = document.querySelector('video');
+    const seconds = Number(sourceLocation?.video?.currentTime);
+    if (video && Number.isFinite(seconds)) {
+      try {
+        video.currentTime = Math.max(0, seconds - 1.5);
+        video.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return true;
+      } catch (_) {}
+    }
+    if (attempt < 12) setTimeout(() => restoreVideo(sourceLocation, attempt + 1), 500);
+    return false;
+  }
+
+  function applyRestore(restore) {
+    if (!restore?.id || restore.id === lastAppliedRestoreId) return;
+    lastAppliedRestoreId = restore.id;
+    const sourceLocation = restore.sourceLocation || {};
+    if (sourceLocation.type === 'video' || sourceLocation.type === 'subtitle') {
+      restoreVideo(sourceLocation, 0);
+      return;
+    }
+    setTimeout(() => {
+      if (!highlightAnchor(sourceLocation.anchor || {})) restoreScrollRatio(sourceLocation.anchor || {});
+    }, 350);
+  }
+
+  async function pollRestore() {
+    if (restorePolling || document.hidden) return;
+    restorePolling = true;
+    try {
+      const endpoint = `${RESTORE_ENDPOINT}?token=${encodeURIComponent(TOKEN)}&url=${encodeURIComponent(location.href)}`;
+      const response = await originalFetch(endpoint, { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data?.restore) applyRestore(data.restore);
+    } catch (_) {
+      // The desktop app can be closed; source capture remains fully functional.
+    } finally {
+      restorePolling = false;
+    }
+  }
+
+  setTimeout(pollRestore, 300);
+  setInterval(pollRestore, 1600);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void pollRestore(); });
+  window.addEventListener('focus', () => void pollRestore());
+  window.addEventListener('pageshow', () => void pollRestore());
+  window.addEventListener('popstate', () => setTimeout(pollRestore, 120));
 
   console.log('[JiaoHua SourceLocation] installed', VERSION);
 })();
