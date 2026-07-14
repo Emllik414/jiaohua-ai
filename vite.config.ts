@@ -56,7 +56,7 @@ function skillShortcutMenuPlugin(): Plugin {
 
 function pronunciationCardPlugin(): Plugin {
   return {
-    name: 'jiaohua-pronunciation-card-expanded',
+    name: 'jiaohua-pronunciation-card-expanded-live-audio',
     enforce: 'pre',
     transform(code, id) {
       if (!id.replace(/\\/g, '/').endsWith('/src/App.tsx')) return null
@@ -87,6 +87,13 @@ function pronunciationCardPlugin(): Plugin {
       next = next.replace(`${stateLine}\n`, '')
       next = next.replace(`\n${resetLine}\n`, '\n')
       next = next.replace(collapsedBlock, expandedBlock)
+
+      const disabledMarker = ' disabled={isRunning}'
+      const disabledCount = next.split(disabledMarker).length - 1
+      if (disabledCount !== 4) {
+        throw new Error(`[pronunciation-card] expected 4 running-state audio locks, found ${disabledCount}`)
+      }
+      next = next.split(disabledMarker).join('')
 
       return { code: next, map: null }
     },
