@@ -28,10 +28,27 @@ jobs:
       - name: Run tests
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force test-logs | Out-Null
+          $failed = $false
           Get-ChildItem -File -Filter '*tests.cjs' | ForEach-Object {
-            node --test $_.FullName
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "=== $($_.Name) ==="
+            $logPath = Join-Path test-logs ($_.BaseName + '.log')
+            node --test $_.FullName 2>&1 | Tee-Object -FilePath $logPath
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "FAILED: $($_.Name)"
+              $failed = $true
+            }
           }
+          if ($failed) { exit 1 }
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-logs-${{ github.sha }}
+          path: test-logs/*.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build Windows installer
         run: npm run dist:win
