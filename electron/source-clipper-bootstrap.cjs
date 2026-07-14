@@ -14,6 +14,7 @@ if (!hasSingleInstanceLock) {
 
   try {
     require('./source-obsidian-runtime.cjs').install();
+    require('./clipper-template-bootstrap.cjs').install();
   } catch (error) {
     console.error('[SourceClipper] install failed; core application continues', error);
   }
