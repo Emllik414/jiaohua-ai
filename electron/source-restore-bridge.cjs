@@ -20,6 +20,10 @@ function readStore(app) {
   catch (_) { return null; }
 }
 
+function exactUrl(value) {
+  return cleanUrl(value);
+}
+
 function comparableUrl(value) {
   const cleaned = cleanUrl(value);
   if (!cleaned) return '';
@@ -51,6 +55,14 @@ function samePage(a, b) {
 function findSourceRecord(app, targetUrl) {
   const store = readStore(app);
   const records = Array.isArray(store?.history) ? store.history : [];
+  const exactTarget = exactUrl(targetUrl);
+  const exact = records.find((record) => {
+    const location = record?.sourceLocation;
+    if (!location?.url) return false;
+    return [location.openUrl, buildOpenUrl(location), location.url]
+      .some((candidate) => exactUrl(candidate) === exactTarget);
+  });
+  if (exact) return exact;
   return records.find((record) => {
     const location = record?.sourceLocation;
     if (!location?.url) return false;
@@ -134,8 +146,10 @@ function install() {
 module.exports = {
   RESTORE_PORT,
   RESTORE_TOKEN,
+  exactUrl,
   comparableUrl,
   samePage,
+  findSourceRecord,
   queueRestore,
   currentRestoreFor,
   install,
