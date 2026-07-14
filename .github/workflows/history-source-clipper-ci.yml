@@ -33,6 +33,7 @@ jobs:
           node --check electron/source-restore-bridge.cjs
           node --check electron/source-obsidian-runtime.cjs
           node --check electron/source-clipper-bootstrap.cjs
+          node --check electron/clipper-initial-data-runtime.cjs
           node --check electron/clipper-template-bootstrap.cjs
           node --check electron/history-export.cjs
           node --check browser-extension/source-location-capture.js
