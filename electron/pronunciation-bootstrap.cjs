@@ -2,6 +2,12 @@
 
 const Module = require('module');
 
+try {
+  require('./pronunciation-live-runtime.cjs').install();
+} catch (error) {
+  console.error('[PronunciationLive] install failed; core application continues', error);
+}
+
 const bootstrapPath = require.resolve('./bootstrap.cjs');
 const mainPath = require.resolve('./main.cjs');
 const originalLoad = Module._load;
