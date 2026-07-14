@@ -2,7 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { ensureClipperTemplate } = require('./obsidian-clipper.cjs');
+const {
+  CLIPPER_TEMPLATE_STATE_KEY,
+  ensureClipperTemplate,
+} = require('./obsidian-clipper.cjs');
 
 let installed = false;
 
@@ -16,7 +19,7 @@ function install() {
     return path.join(app.getPath('userData'), 'data', 'store.json');
   }
 
-  function persistFromInitialData(data, templates) {
+  function persistFromInitialData(data, preparedStore) {
     const file = storeFile();
     let existing = null;
     try { existing = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) {}
@@ -27,7 +30,8 @@ function install() {
       history: data.history,
       conversations: data.conversations,
       activeConversationId: data.activeConversationId,
-      obsidianTemplates: templates,
+      obsidianTemplates: preparedStore.obsidianTemplates,
+      [CLIPPER_TEMPLATE_STATE_KEY]: preparedStore[CLIPPER_TEMPLATE_STATE_KEY],
     };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
@@ -37,12 +41,14 @@ function install() {
     if (channel === 'app:get-initial-data') {
       return registerHandler(channel, async (...args) => {
         const data = await listener(...args);
-        const result = ensureClipperTemplate({ ...data, obsidianTemplates: data?.obsidianTemplates || [] });
+        const result = ensureClipperTemplate({
+          ...data,
+          obsidianTemplates: Array.isArray(data?.obsidianTemplates) ? data.obsidianTemplates : [],
+        });
         if (!result.changed) return data;
-        const templates = result.store.obsidianTemplates;
-        persistFromInitialData(data, templates);
-        console.log('[SourceClipper] persisted compact template on first data load');
-        return { ...data, obsidianTemplates: templates };
+        persistFromInitialData(data, result.store);
+        console.log('[SourceClipper] persisted template installation state');
+        return { ...data, obsidianTemplates: result.store.obsidianTemplates };
       });
     }
     return registerHandler(channel, listener);
