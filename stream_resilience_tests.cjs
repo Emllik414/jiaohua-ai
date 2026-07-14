@@ -18,19 +18,15 @@ function sseDelta(text) {
 
 function responseFromParts(parts, options = {}) {
   const encoder = new TextEncoder();
+  let index = 0;
   const stream = new ReadableStream({
-    start(controller) {
-      let index = 0;
-      const pump = () => {
-        if (index >= parts.length) {
-          if (options.error) controller.error(options.error);
-          else controller.close();
-          return;
-        }
+    pull(controller) {
+      if (index < parts.length) {
         controller.enqueue(encoder.encode(parts[index++]));
-        queueMicrotask(pump);
-      };
-      pump();
+        return;
+      }
+      if (options.error) controller.error(options.error);
+      else controller.close();
     },
   });
   return new Response(stream, {
