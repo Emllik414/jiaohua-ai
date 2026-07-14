@@ -46,7 +46,7 @@ function samePage(a, b) {
     const y = new URL(right);
     if (x.hostname !== y.hostname || x.pathname !== y.pathname) return false;
     if (x.hostname.endsWith('youtube.com')) return x.searchParams.get('v') === y.searchParams.get('v');
-    return true;
+    return x.search === y.search;
   } catch (_) {
     return left === right;
   }
