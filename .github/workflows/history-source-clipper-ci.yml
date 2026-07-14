@@ -38,8 +38,8 @@ jobs:
           node --check browser-extension/source-location-capture.js
           node --check browser-extension/background.js
 
-      - name: Source and Obsidian tests
-        run: node --test source_location_tests.cjs obsidian_clipper_tests.cjs source_restore_tests.cjs source_runtime_tests.cjs
+      - name: Source, Obsidian, and export tests
+        run: node --test source_location_tests.cjs obsidian_clipper_tests.cjs source_restore_tests.cjs source_runtime_tests.cjs history_export_source_tests.cjs
 
       - name: Existing feature regression tests
         run: node --test pronunciation_history_tests.cjs pronunciation_live_tests.cjs caption_stability_v2_tests.cjs skill_shortcut_tests.cjs
