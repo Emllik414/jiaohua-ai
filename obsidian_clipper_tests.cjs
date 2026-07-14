@@ -44,8 +44,7 @@ test('builds one compact source line with a direct YouTube URL', () => {
   const line = buildSourceLine(sampleRecord());
   assert.match(line, /\[!source\]/);
   assert.match(line, /YouTube/);
-  assert.match(line, /https:\/\/www\.youtube\.com\/watch\?v=abc&amp;?/i);
-  assert.match(line, /t=512s/);
+  assert.ok(line.includes('https://www.youtube.com/watch?v=abc&t=512s'));
   assert.doesNotMatch(line, /jiaohua:\/\//);
   assert.match(line, /8:32/);
   assert.equal(line.split('\n').length, 1);
@@ -76,7 +75,7 @@ test('exposes exactly 27 variables and replaces deep link with source open URL',
 
 test('renders only title, direct source, selection and answer', () => {
   const markdown = renderClipperTemplate(CLIPPER_TEMPLATE, sampleRecord());
-  assert.match(markdown, new RegExp(recordMarker('rec-1').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.ok(markdown.includes(recordMarker('rec-1')));
   assert.match(markdown, /^## out of the blue/m);
   assert.match(markdown, /\[!source\]/);
   assert.match(markdown, /> out of the blue/);
