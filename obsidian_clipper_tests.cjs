@@ -42,7 +42,7 @@ test('builds one compact source line', () => {
   const line = buildSourceLine(sampleRecord());
   assert.match(line, /\[!source\]/);
   assert.match(line, /YouTube/);
-  assert.match(line, /回到原处/);
+  assert.match(line, /\[How to Speak English Naturally\]\(jiaohua:\/\/source\/rec-1\)/);
   assert.match(line, /8:32/);
   assert.equal(line.split('\n').length, 1);
 });
@@ -61,7 +61,7 @@ test('builds full template variable context', () => {
   assert.equal(context.source_site, 'YouTube');
   assert.equal(context.video_seconds, '512');
   assert.equal(context.video_time, '8:32');
-  assert.match(context.source_line, /回到原处/);
+  assert.match(context.source_line, /How to Speak English Naturally/);
 });
 
 test('renders only title, source, selection and answer', () => {
