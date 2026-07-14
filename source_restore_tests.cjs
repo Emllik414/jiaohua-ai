@@ -28,9 +28,16 @@ test('matches the same YouTube video only', () => {
 
 test('matches ordinary page despite text fragment', () => {
   assert.equal(samePage(
-    'https://example.com/article#:~:text=hello',
-    'https://example.com/article',
+    'https://example.com/article?id=7#:~:text=hello',
+    'https://example.com/article?id=7',
   ), true);
+});
+
+test('does not mix different query-backed documents', () => {
+  assert.equal(samePage(
+    'https://example.com/article?id=7',
+    'https://example.com/article?id=8',
+  ), false);
 });
 
 test('queues and returns a restore only for its page', () => {
@@ -38,11 +45,12 @@ test('queues and returns a restore only for its page', () => {
     id: 'rec-1',
     sourceLocation: {
       type: 'web',
-      url: 'https://example.com/article',
+      url: 'https://example.com/article?id=7',
       anchor: { selectedText: 'hello', scrollRatio: 0.4 },
     },
   });
   assert.ok(queued.id);
-  assert.equal(currentRestoreFor('https://example.com/article')?.recordId, 'rec-1');
+  assert.equal(currentRestoreFor('https://example.com/article?id=7')?.recordId, 'rec-1');
+  assert.equal(currentRestoreFor('https://example.com/article?id=8'), null);
   assert.equal(currentRestoreFor('https://example.com/other'), null);
 });
