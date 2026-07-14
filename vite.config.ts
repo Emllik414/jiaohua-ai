@@ -106,7 +106,6 @@ function sourceLocationUiPlugin(): Plugin {
   url?: string
   normalizedUrl?: string
   openUrl?: string
-  deepLink?: string
   title?: string
   hostname?: string
   siteName?: string
@@ -149,14 +148,19 @@ ${answerFormatMarker}`
       source_type: 'subtitle',
       source_site: 'YouTube',
       source_title: 'How to Speak English Naturally',
-      source_url: 'https://www.youtube.com/watch?v=example&t=512s',
-      source_deep_link: 'jiaohua://source/example-record',
+      source_title_yaml: 'How to Speak English Naturally',
+      source_url: 'https://www.youtube.com/watch?v=example',
+      source_open_url: 'https://www.youtube.com/watch?v=example&t=512s',
       source_host: 'youtube.com',
       source_icon: '▶',
       source_favicon: '.jiaohua/favicons/youtube.com.png',
-      source_line: '> [!source] ▶ YouTube · [How to Speak English Naturally](jiaohua://source/example-record) · 8:32',
+      source_line: '> [!source] ▶ YouTube · [How to Speak English Naturally](https://www.youtube.com/watch?v=example&t=512s) · 8:32',
       video_time: '8:32',
       video_seconds: '512',
+      selection_short: '示例原文内容',
+      selection_title: '示例原文内容',
+      answer: '这是 AI 返回的示例结果。',
+      skill_id: 'translate',
       selection_context: 'and then, completely out of the blue, he called me again',
       captured_at: new Date().toLocaleString('zh-CN'),
       record_id: 'example-record',
@@ -164,16 +168,127 @@ ${answerFormatMarker}`
       if (!next.includes(previewContextMarker)) throw new Error('[source-location-ui] missing Obsidian preview context marker')
       next = next.replace(previewContextMarker, previewContextReplacement)
 
-      const tokenMarker = `['{{selection}}', '{{ai_result}}', '{{skill_name}}', '{{model}}', '{{date}}', '{{time}}', '{{source_app}}', '{{history_space}}']`
-      const tokenReplacement = `['{{selection}}', '{{ai_result}}', '{{source_line}}', '{{source_title}}', '{{source_url}}', '{{video_time}}', '{{skill_name}}', '{{date}}', '{{time}}', '{{record_id}}']`
-      if (!next.includes(tokenMarker)) throw new Error('[source-location-ui] missing Obsidian token marker')
-      next = next.replace(tokenMarker, tokenReplacement)
+      const obsidianPanelMarker = `function ObsidianPanel(`
+      const variableGuide = `type ObsidianTemplateVariable = {
+  token: string
+  description: string
+  category: '划词内容' | 'AI 与技能' | '时间' | '来源' | '内部'
+  common: boolean
+}
+
+const OBSIDIAN_TEMPLATE_VARIABLES: ObsidianTemplateVariable[] = [
+  { token: '{{selection}}', description: '当时划选的完整原文。', category: '划词内容', common: true },
+  { token: '{{ai_result}}', description: 'AI 最终生成的翻译、解释或其他结果。', category: 'AI 与技能', common: true },
+  { token: '{{source_line}}', description: '自动生成一行简洁来源，包含图标、标题、直接链接和视频时间。', category: '来源', common: true },
+  { token: '{{source_open_url}}', description: '可直接打开的最终来源链接；YouTube 和 Bilibili 会带准确视频时间。', category: '来源', common: true },
+  { token: '{{source_title}}', description: '原网页、文章或视频的标题。', category: '来源', common: true },
+  { token: '{{video_time}}', description: '便于阅读的视频时间，例如 08:32。', category: '时间', common: true },
+  { token: '{{skill_name}}', description: '本条记录使用的技能名称，例如翻译、解释或发音。', category: 'AI 与技能', common: true },
+  { token: '{{date}}', description: '历史记录创建日期，例如 2026-07-14。', category: '时间', common: true },
+  { token: '{{time}}', description: '历史记录创建时间，例如 12:30。', category: '时间', common: true },
+  { token: '{{record_id}}', description: '每条历史记录的唯一编号，用于识别和防止重复导入。', category: '内部', common: true },
+  { token: '{{selection_short}}', description: '划词内容的短版本，最多约 28 个字符，适合用于文件名。', category: '划词内容', common: false },
+  { token: '{{selection_title}}', description: '自动整理的笔记标题；内容过长时会截断。', category: '划词内容', common: false },
+  { token: '{{selection_context}}', description: '划词原文连同前文和后文，用于保留语境。', category: '划词内容', common: false },
+  { token: '{{answer}}', description: '{{ai_result}} 的别名，输出内容完全相同。', category: 'AI 与技能', common: false },
+  { token: '{{skill_id}}', description: '技能的内部编号，适合自动分类或脚本处理。', category: 'AI 与技能', common: false },
+  { token: '{{model}}', description: '生成本条结果时使用的 AI 模型名称。', category: 'AI 与技能', common: false },
+  { token: '{{captured_at}}', description: '浏览器中真正发生划词时的日期和时间。', category: '时间', common: false },
+  { token: '{{source_app}}', description: '来源应用名称，例如 Chrome、Edge 或 Windows。', category: '来源', common: false },
+  { token: '{{source_type}}', description: '来源类型：web、subtitle、video 或 desktop。', category: '来源', common: false },
+  { token: '{{source_site}}', description: '网站或平台名称，例如 YouTube、Bilibili。', category: '来源', common: false },
+  { token: '{{source_title_yaml}}', description: '经过转义的来源标题，适合安全放入 YAML 属性。', category: '来源', common: false },
+  { token: '{{source_url}}', description: '清理追踪参数后的原始网页链接；视频链接不额外添加时间。', category: '来源', common: false },
+  { token: '{{source_host}}', description: '来源网站域名，例如 youtube.com。', category: '来源', common: false },
+  { token: '{{source_icon}}', description: '简单来源图标，例如 ▶、📺 或 🌐。', category: '来源', common: false },
+  { token: '{{source_favicon}}', description: '网站图标保存在 Obsidian Vault 中的本地相对路径。', category: '来源', common: false },
+  { token: '{{video_seconds}}', description: '视频位置对应的总秒数，例如 512，适合自定义时间链接。', category: '时间', common: false },
+  { token: '{{history_space}}', description: '兼容旧模板的预留变量，目前默认输出为空。', category: '内部', common: false },
+]
+
+const OBSIDIAN_VARIABLE_CATEGORIES: ObsidianTemplateVariable['category'][] = ['划词内容', 'AI 与技能', '时间', '来源', '内部']
+
+${obsidianPanelMarker}`
+      if (!next.includes(obsidianPanelMarker)) throw new Error('[source-location-ui] missing ObsidianPanel marker')
+      next = next.replace(obsidianPanelMarker, variableGuide)
+
+      const showPickerState = `  const [showNotePicker, setShowNotePicker] = useState(false)`
+      if (!next.includes(showPickerState)) throw new Error('[source-location-ui] missing Obsidian variable state marker')
+      next = next.replace(showPickerState, `${showPickerState}\n  const [showMoreVariables, setShowMoreVariables] = useState(false)`)
+
+      const tokenBlock = `              <div className="form-row">
+                <label>变量 token</label>
+                <div className="token-row">
+                  {['{{selection}}', '{{ai_result}}', '{{skill_name}}', '{{model}}', '{{date}}', '{{time}}', '{{source_app}}', '{{history_space}}'].map((t) => (
+                    <span key={t} className="token">{t}</span>
+                  ))}
+                </div>
+              </div>`
+      const variableBrowser = `              <div className="form-row template-variable-guide">
+                <div className="template-variable-guide-head">
+                  <div>
+                    <label>模板变量</label>
+                    <span>共 27 个；常用变量直接显示，其余收进“更多”。点击变量可复制。</span>
+                  </div>
+                  <span className="template-variable-count">27</span>
+                </div>
+                <div className="template-variable-common-grid">
+                  {OBSIDIAN_TEMPLATE_VARIABLES.filter((item) => item.common).map((item) => (
+                    <button
+                      key={item.token}
+                      type="button"
+                      className="template-variable-card"
+                      onClick={() => { void window.desktopApi.copyText(item.token); setMessage('已复制变量：' + item.token) }}
+                    >
+                      <code>{item.token}</code>
+                      <small>{item.description}</small>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="template-variable-more-toggle"
+                  onClick={() => setShowMoreVariables((value) => !value)}
+                  aria-expanded={showMoreVariables}
+                >
+                  {showMoreVariables ? '收起更多变量' : '更多变量（17）'}
+                  <span aria-hidden="true">{showMoreVariables ? '⌃' : '⌄'}</span>
+                </button>
+                {showMoreVariables ? (
+                  <div className="template-variable-more-panel">
+                    {OBSIDIAN_VARIABLE_CATEGORIES.map((category) => {
+                      const items = OBSIDIAN_TEMPLATE_VARIABLES.filter((item) => !item.common && item.category === category)
+                      if (items.length === 0) return null
+                      return (
+                        <section key={category} className="template-variable-category">
+                          <h4>{category}</h4>
+                          <div className="template-variable-detail-list">
+                            {items.map((item) => (
+                              <button
+                                key={item.token}
+                                type="button"
+                                className="template-variable-detail-row"
+                                onClick={() => { void window.desktopApi.copyText(item.token); setMessage('已复制变量：' + item.token) }}
+                              >
+                                <code>{item.token}</code>
+                                <span>{item.description}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </section>
+                      )
+                    })}
+                  </div>
+                ) : null}
+              </div>`
+      if (!next.includes(tokenBlock)) throw new Error('[source-location-ui] missing Obsidian token block')
+      next = next.replace(tokenBlock, variableBrowser)
 
       const recordCardMarker = `function RecordCard({ item, expanded, onToggle, selectMode, checked, onToggleSelect, onDelete, activeTtsKey, onToggleSpeak }:`
       const helpers = `function sourceLocationLabel(location?: SourceLocation) {
   if (!location) return ''
   const site = location.siteName || location.hostname?.replace(/^www\\./, '') || '网页'
-  return location.videoTime ? \`${'${site}'} · ${'${location.videoTime}'}\` : site
+  return location.videoTime ? site + ' · ' + location.videoTime : site
 }
 
 function sourceLocationIcon(location?: SourceLocation) {
