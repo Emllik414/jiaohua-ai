@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.1.0-source-location';
+  const VERSION = '1.1.1-source-location';
   const RESTORE_ENDPOINT = 'http://127.0.0.1:17322/restore';
   const TOKEN = 'aisel-local-bridge-v1';
   if (window.__JIAOHUA_SOURCE_LOCATION_CAPTURE__ === VERSION) return;
@@ -11,6 +11,7 @@
   let lastAnchor = null;
   let lastAppliedRestoreId = '';
   let restorePolling = false;
+  let restorePollUntil = Date.now() + 16000;
 
   function normalizeText(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
@@ -26,15 +27,13 @@
   }
 
   function faviconUrl() {
-    const candidates = [
+    for (const selector of [
       'link[rel="icon"]',
       'link[rel="shortcut icon"]',
       'link[rel="apple-touch-icon"]',
       'link[rel="apple-touch-icon-precomposed"]',
-    ];
-    for (const selector of candidates) {
-      const node = document.querySelector(selector);
-      const href = node && node.getAttribute('href');
+    ]) {
+      const href = document.querySelector(selector)?.getAttribute('href');
       const resolved = safeUrl(href);
       if (resolved) return resolved;
     }
@@ -42,7 +41,7 @@
   }
 
   function elementFingerprint(node) {
-    const element = node && node.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
     if (!element) return '';
     const parts = [];
     let current = element;
@@ -50,8 +49,7 @@
       let part = String(current.tagName || '').toLowerCase();
       if (!part) break;
       if (current.id && !/\d{4,}/.test(current.id)) {
-        part += `#${current.id}`;
-        parts.unshift(part);
+        parts.unshift(`${part}#${current.id}`);
         break;
       }
       const classes = Array.from(current.classList || [])
@@ -74,10 +72,9 @@
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
       const range = selection.getRangeAt(0);
-      const root = (range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-        ? range.commonAncestorContainer
-        : range.commonAncestorContainer.parentElement)?.closest?.('p, li, blockquote, article, section, td, th, div')
-        || range.commonAncestorContainer.parentElement;
+      const common = range.commonAncestorContainer;
+      const element = common.nodeType === Node.ELEMENT_NODE ? common : common.parentElement;
+      const root = element?.closest?.('p, li, blockquote, article, section, td, th, div') || element;
       const text = normalizeText(root?.innerText || root?.textContent || '');
       const needle = normalizeText(selectedText || selection.toString());
       const index = text.toLowerCase().indexOf(needle.toLowerCase());
@@ -85,7 +82,7 @@
         selectedText: needle,
         prefixText: index >= 0 ? text.slice(Math.max(0, index - 100), index) : '',
         suffixText: index >= 0 ? text.slice(index + needle.length, index + needle.length + 100) : '',
-        elementFingerprint: elementFingerprint(range.commonAncestorContainer),
+        elementFingerprint: elementFingerprint(common),
       };
     } catch (_) {
       return null;
@@ -134,7 +131,6 @@
     const text = normalizeText(window.getSelection()?.toString() || '');
     if (text) captureAnchor(text);
   }, true);
-
   document.addEventListener('mouseup', () => {
     const text = normalizeText(window.getSelection()?.toString() || '');
     if (text) captureAnchor(text);
@@ -250,8 +246,7 @@
     const suffix = normalizeText(anchor?.suffixText || '').toLowerCase().slice(0, 48);
     if (prefix && text.includes(prefix)) score += 80;
     if (suffix && text.includes(suffix)) score += 80;
-    score -= Math.min(100, Math.max(0, text.length - selected.length) / 10);
-    return score;
+    return score - Math.min(100, Math.max(0, text.length - selected.length) / 10);
   }
 
   function findCandidateBlock(anchor) {
@@ -291,12 +286,6 @@
     return null;
   }
 
-  function flashElement(element) {
-    if (!element) return;
-    element.setAttribute('data-jiaohua-source-flash', 'true');
-    setTimeout(() => element.removeAttribute('data-jiaohua-source-flash'), 4500);
-  }
-
   function highlightAnchor(anchor) {
     const element = findCandidateBlock(anchor);
     if (!element) return false;
@@ -310,7 +299,8 @@
         return true;
       } catch (_) {}
     }
-    flashElement(element);
+    element.setAttribute('data-jiaohua-source-flash', 'true');
+    setTimeout(() => element.removeAttribute('data-jiaohua-source-flash'), 4500);
     return true;
   }
 
@@ -355,7 +345,7 @@
   }
 
   async function pollRestore() {
-    if (restorePolling || document.hidden) return;
+    if (window.top !== window || restorePolling || document.hidden || Date.now() > restorePollUntil) return;
     restorePolling = true;
     try {
       const endpoint = `${RESTORE_ENDPOINT}?token=${encodeURIComponent(TOKEN)}&url=${encodeURIComponent(location.href)}`;
@@ -370,12 +360,31 @@
     }
   }
 
-  setTimeout(pollRestore, 300);
-  setInterval(pollRestore, 1600);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) void pollRestore(); });
-  window.addEventListener('focus', () => void pollRestore());
-  window.addEventListener('pageshow', () => void pollRestore());
-  window.addEventListener('popstate', () => setTimeout(pollRestore, 120));
+  function startRestoreBurst(durationMs = 16000) {
+    restorePollUntil = Math.max(restorePollUntil, Date.now() + durationMs);
+    void pollRestore();
+  }
+
+  const originalPushState = history.pushState.bind(history);
+  history.pushState = function sourceAwarePushState() {
+    const result = originalPushState(...arguments);
+    startRestoreBurst();
+    return result;
+  };
+  const originalReplaceState = history.replaceState.bind(history);
+  history.replaceState = function sourceAwareReplaceState() {
+    const result = originalReplaceState(...arguments);
+    startRestoreBurst();
+    return result;
+  };
+
+  setTimeout(() => startRestoreBurst(), 300);
+  setInterval(() => { if (Date.now() <= restorePollUntil) void pollRestore(); }, 1800);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) startRestoreBurst(); });
+  window.addEventListener('focus', () => startRestoreBurst());
+  window.addEventListener('pageshow', () => startRestoreBurst());
+  window.addEventListener('popstate', () => startRestoreBurst());
+  window.addEventListener('hashchange', () => startRestoreBurst());
 
   console.log('[JiaoHua SourceLocation] installed', VERSION);
 })();
