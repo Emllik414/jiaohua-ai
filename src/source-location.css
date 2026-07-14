@@ -1,3 +1,7 @@
+.record-card-head {
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(76px, 150px) auto auto;
+}
+
 .record-source-mini {
   min-width: 0;
   max-width: 150px;
@@ -113,8 +117,14 @@ html[data-appearance="dark"] .record-origin-actions button {
   color: #b9a8ff;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1020px) {
+  .record-card-head {
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  }
   .record-source-mini { display: none; }
+}
+
+@media (max-width: 760px) {
   .record-origin-strip { align-items: flex-start; flex-wrap: wrap; }
   .record-origin-actions { width: 100%; justify-content: flex-end; }
 }
