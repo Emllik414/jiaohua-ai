@@ -42,8 +42,10 @@ function installSelectionCapture() {
             const url = String(req?.url || '').split('?')[0];
             if (String(req?.method || '').toUpperCase() === 'POST' && url === '/selection') {
               const chunks = [];
+              let capturedBytes = 0;
               req.on('data', (chunk) => {
-                if (chunks.reduce((sum, item) => sum + item.length, 0) < 1024 * 512) chunks.push(Buffer.from(chunk));
+                capturedBytes += chunk.length;
+                if (capturedBytes <= 1024 * 512) chunks.push(Buffer.from(chunk));
               });
               req.on('end', () => {
                 const payload = parseSelectionBody(Buffer.concat(chunks).toString('utf8'));
@@ -61,9 +63,11 @@ function installSelectionCapture() {
   };
 }
 
-function sourceSnapshotForSelection(selection) {
+function sourceSnapshotForSelection(selection, options = {}) {
   if (!latestBrowserPayload || Date.now() - latestBrowserPayloadAt > 30000) return null;
-  if (!sourceMatchesSelection(latestBrowserPayload, selection)) return null;
+  const hasSelection = Boolean(String(selection || '').trim());
+  if (hasSelection && !sourceMatchesSelection(latestBrowserPayload, selection)) return null;
+  if (!hasSelection && !options.allowLatest) return null;
   return normalizeSourceLocation(latestBrowserPayload.sourceLocation);
 }
 
@@ -149,12 +153,13 @@ async function ensureFavicon(vaultPath, record) {
   const location = record?.sourceLocation;
   if (!vaultPath || !location?.faviconUrl || !location?.hostname) return record;
   if (location.faviconVaultPath) return record;
-  const folder = path.join(vaultPath, '.jiaohua', 'favicons');
+  const relativeFolder = path.join('AI划词', '_assets', 'favicons');
+  const folder = path.join(vaultPath, relativeFolder);
   fs.mkdirSync(folder, { recursive: true });
   const base = cleanHostFileName(location.hostname);
   const existing = fs.readdirSync(folder).find((name) => name === base || name.startsWith(`${base}.`));
   if (existing) {
-    return { ...record, sourceLocation: { ...location, faviconVaultPath: `.jiaohua/favicons/${existing}` } };
+    return { ...record, sourceLocation: { ...location, faviconVaultPath: `${relativeFolder.replace(/\\/g, '/')}/${existing}` } };
   }
 
   try {
@@ -164,14 +169,16 @@ async function ensureFavicon(vaultPath, record) {
       headers: { 'User-Agent': 'JiaoHua-AI/1.0' },
     });
     if (!response.ok) return record;
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (!/^image\/(png|jpe?g|webp|x-icon|vnd\.microsoft\.icon|ico)(?:;|$)/.test(contentType)) return record;
     const contentLength = Number(response.headers.get('content-length') || 0);
     if (contentLength > 256 * 1024) return record;
     const buffer = Buffer.from(await response.arrayBuffer());
     if (!buffer.length || buffer.length > 256 * 1024) return record;
-    const ext = extensionFromContentType(response.headers.get('content-type'), location.faviconUrl);
+    const ext = extensionFromContentType(contentType, location.faviconUrl);
     const name = `${base}${ext}`;
     fs.writeFileSync(path.join(folder, name), buffer);
-    return { ...record, sourceLocation: { ...location, faviconVaultPath: `.jiaohua/favicons/${name}` } };
+    return { ...record, sourceLocation: { ...location, faviconVaultPath: `${relativeFolder.replace(/\\/g, '/')}/${name}` } };
   } catch (_) {
     return record;
   }
@@ -185,12 +192,19 @@ function findRecord(store, recordInput) {
   return store.history?.find((item) => String(item.id) === String(recordInput));
 }
 
+function enrichRecordFromLatestSource(record) {
+  if (!record || record.sourceLocation) return record;
+  const snapshot = sourceSnapshotForSelection(record.selectedText, { allowLatest: true });
+  return snapshot ? attachRecordLinks(record, snapshot) : record;
+}
+
 async function saveClipToObsidian(app, BrowserWindow, payload) {
   const request = payload || {};
   const store = readStore(app);
   if (!store) throw new Error('无法读取本地历史数据。');
-  const record = findRecord(store, request.record || request.recordId);
+  let record = findRecord(store, request.record || request.recordId);
   if (!record) throw new Error('没有找到这条历史记录。');
+  record = enrichRecordFromLatestSource(record);
   const template = (store.obsidianTemplates || []).find((item) => item.id === request.templateId);
   if (!template) throw new Error('没有找到这个模板。');
   const vaultPath = String(store.settings?.obsidian?.vaultPath || '').trim();
@@ -228,8 +242,9 @@ function previewClip(app, payload) {
   const request = payload || {};
   const store = readStore(app);
   if (!store) throw new Error('无法读取本地历史数据。');
-  const record = findRecord(store, request.record || request.recordId);
+  let record = findRecord(store, request.record || request.recordId);
   if (!record) throw new Error('没有找到这条历史记录。');
+  record = enrichRecordFromLatestSource(record);
   const template = (store.obsidianTemplates || []).find((item) => item.id === request.templateId);
   if (!template) throw new Error('没有找到这个模板。');
   const context = buildClipperContext(record);
@@ -302,6 +317,13 @@ function installProtocol(app, shell) {
   });
 }
 
+function patchResultWithSource(app, BrowserWindow, result, snapshot) {
+  if (!result || !result.id || !snapshot) return result;
+  const patched = attachRecordLinks(result, snapshot);
+  updateHistoryRecord(app, BrowserWindow, result.id, (record) => ({ ...record, sourceLocation: patched.sourceLocation }));
+  return patched;
+}
+
 function install() {
   if (installed) return;
   installed = true;
@@ -332,12 +354,18 @@ function install() {
     if (channel === 'skill:run') {
       return registerHandler(channel, async (...args) => {
         const selection = args?.[1]?.selection || '';
-        const snapshot = sourceSnapshotForSelection(selection);
+        const snapshot = sourceSnapshotForSelection(selection, { allowLatest: true });
         const result = await listener(...args);
-        if (!result || !result.id || !snapshot) return result;
-        const patched = attachRecordLinks(result, snapshot);
-        updateHistoryRecord(app, BrowserWindow, result.id, (record) => ({ ...record, sourceLocation: patched.sourceLocation }));
-        return patched;
+        return patchResultWithSource(app, BrowserWindow, result, snapshot);
+      });
+    }
+
+    if (channel === 'result:confirm-selection-action') {
+      return registerHandler(channel, async (...args) => {
+        const selectedText = args?.[1]?.selectedText || '';
+        const snapshot = sourceSnapshotForSelection(selectedText, { allowLatest: true });
+        const result = await listener(...args);
+        return patchResultWithSource(app, BrowserWindow, result, snapshot);
       });
     }
 
@@ -377,4 +405,5 @@ module.exports = {
   parseSelectionBody,
   sourceSnapshotForSelection,
   protocolRecordId,
+  patchResultWithSource,
 };
