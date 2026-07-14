@@ -7,7 +7,7 @@
 })(typeof window !== 'undefined' ? window : null, function () {
   'use strict';
 
-  const VERSION = '2.1.0-caption-stability';
+  const VERSION = '2.2.0-caption-stability';
   const OVERLAY_ID = 'jiaohua-selectable-caption-overlay';
   const TEXT_SELECTOR = `#${OVERLAY_ID} .jiaohua-caption-text`;
   const HANDLE_SELECTOR = `#${OVERLAY_ID} .jiaohua-caption-drag-handle`;
@@ -15,10 +15,12 @@
   const VISIBLE_ATTRIBUTE = 'data-jiaohua-caption-v2-visible';
   const STABLE_ATTRIBUTE = 'data-jiaohua-caption-stable';
   const MANUAL_ATTRIBUTE = 'data-jiaohua-caption-manual';
+  const HANDLE_VISIBLE_ATTRIBUTE = 'data-jiaohua-handle-visible';
+  const DRAGGING_ATTRIBUTE = 'data-jiaohua-dragging';
   const ACTIVE_CLASS = 'jiaohua-selectable-caption-active';
 
   function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
+    return Math.min(Math.max(Number(value) || 0, min), max);
   }
 
   function normalizeText(value) {
@@ -29,13 +31,15 @@
     return /[\u3400-\u9fff]/.test(String(value || ''));
   }
 
+  function lexicalWords(value) {
+    const text = normalizeText(value).toLowerCase();
+    if (!text) return [];
+    if (containsCjk(text)) return Array.from(text).filter((char) => !/\s/.test(char));
+    return text.match(/[a-z0-9]+(?:['’\-][a-z0-9]+)*/g) || [];
+  }
+
   function countWords(value) {
-    const text = normalizeText(value);
-    if (!text) return 0;
-    if (containsCjk(text)) {
-      return Array.from(text).filter((char) => /[\u3400-\u9fff]/.test(char)).length;
-    }
-    return (text.match(/[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*/g) || []).length;
+    return lexicalWords(value).length;
   }
 
   function endsSentence(value) {
@@ -44,15 +48,6 @@
 
   function endsClause(value) {
     return /[,;:，；：、—…][”’"')\]}】》]*$/.test(normalizeText(value));
-  }
-
-  function normalizeWord(value) {
-    return String(value || '').toLowerCase().replace(/^[^a-z0-9\u3400-\u9fff]+|[^a-z0-9\u3400-\u9fff]+$/g, '');
-  }
-
-  function lexicalWords(value) {
-    if (containsCjk(value)) return Array.from(normalizeText(value)).filter((char) => /[\u3400-\u9fff]/.test(char));
-    return (normalizeText(value).match(/[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*/g) || []).map(normalizeWord).filter(Boolean);
   }
 
   function suffixPrefixOverlap(previous, next) {
@@ -95,11 +90,13 @@
           blankGraceMs: 240,
           disableAfterMs: 900,
           selectionReleaseMs: 180,
+          handleHideMs: 650,
           minWords: 3,
           idealMinWords: 5,
           idealMaxWords: 11,
           maxWords: 16,
           maxCjk: 28,
+          defaultBottomRatio: 0.075,
         }
       : {
           sentenceMs: 80,
@@ -110,11 +107,13 @@
           blankGraceMs: 320,
           disableAfterMs: 1200,
           selectionReleaseMs: 240,
+          handleHideMs: 650,
           minWords: 4,
           idealMinWords: 6,
           idealMaxWords: 12,
           maxWords: 16,
           maxCjk: 30,
+          defaultBottomRatio: 0.075,
         };
   }
 
@@ -181,7 +180,7 @@
     if (/[.!?。！？][”’"')\]}】》]*$/.test(before)) score += 260;
     else if (/[,;:，；：、—…][”’"')\]}】》]*$/.test(before)) score += 150;
 
-    if (!cjk && /^(?:but|because|although|though|when|while|if|so|which|that|and)$/i.test(normalizeWord(after))) {
+    if (!cjk && /^(?:but|because|although|though|when|while|if|so|which|that|and)$/i.test(normalizeText(after))) {
       score += index >= 4 ? 90 : 20;
     }
     return score;
@@ -229,6 +228,64 @@
     return { text, display: `${best.first}\n${best.second}`, breakIndex: best.index };
   }
 
+  function computeContainedVideoRect(rect, intrinsicWidth, intrinsicHeight) {
+    if (!rect || !Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) return null;
+    const sourceWidth = Number(intrinsicWidth);
+    const sourceHeight = Number(intrinsicHeight);
+    if (!(sourceWidth > 0) || !(sourceHeight > 0)) {
+      return {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        right: Number.isFinite(rect.right) ? rect.right : rect.left + rect.width,
+        bottom: Number.isFinite(rect.bottom) ? rect.bottom : rect.top + rect.height,
+      };
+    }
+
+    const sourceRatio = sourceWidth / sourceHeight;
+    const boxRatio = rect.width / rect.height;
+    if (boxRatio > sourceRatio) {
+      const width = rect.height * sourceRatio;
+      return {
+        left: rect.left + (rect.width - width) / 2,
+        top: rect.top,
+        width,
+        height: rect.height,
+        right: rect.left + (rect.width + width) / 2,
+        bottom: rect.top + rect.height,
+      };
+    }
+
+    const height = rect.width / sourceRatio;
+    return {
+      left: rect.left,
+      top: rect.top + (rect.height - height) / 2,
+      width: rect.width,
+      height,
+      right: rect.left + rect.width,
+      bottom: rect.top + (rect.height + height) / 2,
+    };
+  }
+
+  function clampBottomRatio(ratio, contentHeight, overlayHeight, topMarginRatio = 0.04, bottomMarginRatio = 0.03) {
+    const height = Math.max(1, Number(contentHeight) || 1);
+    const overlay = Math.max(0, Number(overlayHeight) || 0);
+    const min = clamp(bottomMarginRatio, 0, 0.45);
+    const max = Math.max(min, 1 - clamp(topMarginRatio, 0, 0.45) - overlay / height);
+    return clamp(ratio, min, max);
+  }
+
+  function bottomRatioToPlayerBottom(ratio, contentRect, playerRect) {
+    if (!contentRect || !playerRect) return 0;
+    return Math.max(0, (playerRect.bottom - contentRect.bottom) + clamp(ratio, 0, 1) * contentRect.height);
+  }
+
+  function dragBottomRatio(startRatio, deltaY, contentHeight, overlayHeight) {
+    const height = Math.max(1, Number(contentHeight) || 1);
+    return clampBottomRatio(Number(startRatio) - Number(deltaY || 0) / height, height, overlayHeight);
+  }
+
   function install(win) {
     const host = String(win.location?.hostname || '').toLowerCase();
     const supported = host === 'youtube.com' || host.endsWith('.youtube.com') ||
@@ -252,36 +309,40 @@
       cueSwitched: false,
       layout: null,
       locked: false,
+      dragging: false,
+      manualBottomRatio: null,
     };
 
     let overlay = null;
     let textElement = null;
+    let handleElement = null;
     let player = null;
     let video = null;
     let commitTimer = 0;
     let blankTimer = 0;
     let disableTimer = 0;
     let selectionReleaseTimer = 0;
+    let handleHideTimer = 0;
     let documentObserver = null;
     let overlayObserver = null;
     let playerResizeObserver = null;
     let videoResizeObserver = null;
+    let interactionAbort = null;
     let canvasContext = null;
     let applyingText = false;
 
     function clearTimer(name) {
-      const id = name === 'commit'
-        ? commitTimer
-        : name === 'blank'
-          ? blankTimer
-          : name === 'selection'
-            ? selectionReleaseTimer
-            : disableTimer;
+      const id = name === 'commit' ? commitTimer
+        : name === 'blank' ? blankTimer
+          : name === 'disable' ? disableTimer
+            : name === 'selection' ? selectionReleaseTimer
+              : handleHideTimer;
       if (id) win.clearTimeout(id);
       if (name === 'commit') commitTimer = 0;
       else if (name === 'blank') blankTimer = 0;
+      else if (name === 'disable') disableTimer = 0;
       else if (name === 'selection') selectionReleaseTimer = 0;
-      else disableTimer = 0;
+      else handleHideTimer = 0;
     }
 
     function setVisible(visible) {
@@ -322,12 +383,10 @@
           line-height: 1.32 !important;
           pointer-events: none !important;
           transition: none !important;
-        }
-        html[${VISIBLE_ATTRIBUTE}="true"] #${OVERLAY_ID}:not([${MANUAL_ATTRIBUTE}="true"]) {
           left: 50% !important;
           right: auto !important;
           top: auto !important;
-          bottom: var(--jiaohua-caption-bottom, 7.5%) !important;
+          bottom: var(--jiaohua-caption-bottom-px, 7.5%) !important;
           transform: translateX(-50%) !important;
         }
         #${OVERLAY_ID} .jiaohua-caption-text {
@@ -341,6 +400,55 @@
           word-break: normal !important;
           transition: none !important;
           transform: none !important;
+        }
+        #${OVERLAY_ID} .jiaohua-caption-drag-handle {
+          display: block !important;
+          position: absolute !important;
+          left: 50% !important;
+          top: var(--jiaohua-caption-handle-top, -34px) !important;
+          width: 58px !important;
+          height: 38px !important;
+          margin-left: -29px !important;
+          padding: 0 !important;
+          border: 0 !important;
+          border-radius: 18px !important;
+          background: transparent !important;
+          color: transparent !important;
+          cursor: ns-resize !important;
+          pointer-events: auto !important;
+          touch-action: none !important;
+          user-select: none !important;
+          -webkit-user-select: none !important;
+          opacity: 0 !important;
+          visibility: hidden !important;
+          transform: none !important;
+          transition: opacity .12s ease, visibility .12s ease !important;
+          z-index: 3 !important;
+        }
+        #${OVERLAY_ID} .jiaohua-caption-drag-handle::before {
+          content: '↕';
+          position: absolute;
+          left: 8px;
+          top: 5px;
+          width: 42px;
+          height: 24px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 14px;
+          background: rgba(20, 20, 20, .88);
+          color: #fff;
+          font-size: 16px;
+          line-height: 1;
+          box-shadow: 0 1px 4px rgba(0, 0, 0, .42);
+        }
+        #${OVERLAY_ID}[${HANDLE_VISIBLE_ATTRIBUTE}="true"] .jiaohua-caption-drag-handle,
+        #${OVERLAY_ID}[${DRAGGING_ATTRIBUTE}="true"] .jiaohua-caption-drag-handle {
+          opacity: 1 !important;
+          visibility: visible !important;
+        }
+        #${OVERLAY_ID}[${DRAGGING_ATTRIBUTE}="true"] .jiaohua-caption-drag-handle {
+          cursor: grabbing !important;
         }
       `;
       (doc.head || doc.documentElement).appendChild(style);
@@ -356,21 +464,49 @@
       return nextPlayer?.querySelector('video') || doc.querySelector('video');
     }
 
-    function updateFontSize() {
+    function geometry() {
+      if (!player) return null;
+      const playerRect = player.getBoundingClientRect();
+      const rawVideoRect = video?.getBoundingClientRect?.() || playerRect;
+      const contentRect = computeContainedVideoRect(rawVideoRect, video?.videoWidth, video?.videoHeight) || rawVideoRect;
+      if (!(contentRect.height > 1) || !(playerRect.height > 1)) return null;
+      return { playerRect, contentRect };
+    }
+
+    function updateHandlePosition() {
+      if (!overlay || !textElement) return;
+      const textTop = Number(textElement.offsetTop) || 0;
+      overlay.style.setProperty('--jiaohua-caption-handle-top', `${Math.round(textTop - 34)}px`);
+    }
+
+    function applyVerticalPosition() {
       if (!overlay || !player) return;
-      const videoRect = video?.getBoundingClientRect?.();
-      const playerRect = player.getBoundingClientRect?.();
-      const height = videoRect?.height > 1 ? videoRect.height : playerRect?.height;
-      if (!Number.isFinite(height) || height <= 1) return;
-      const size = clamp(height * 0.036, 16, 32);
+      const box = geometry();
+      if (!box) return;
+      const requested = state.manualBottomRatio ?? state.policy.defaultBottomRatio;
+      const ratio = clampBottomRatio(requested, box.contentRect.height, overlay.offsetHeight);
+      if (state.manualBottomRatio !== null) state.manualBottomRatio = ratio;
+      const bottomPx = bottomRatioToPlayerBottom(ratio, box.contentRect, box.playerRect);
+      overlay.style.setProperty('--jiaohua-caption-bottom-px', `${bottomPx.toFixed(2)}px`);
+      if (state.manualBottomRatio === null) overlay.removeAttribute(MANUAL_ATTRIBUTE);
+      else overlay.setAttribute(MANUAL_ATTRIBUTE, 'true');
+      updateHandlePosition();
+    }
+
+    function updateFontAndPosition() {
+      if (!overlay || !player) return;
+      const box = geometry();
+      if (!box) return;
+      const size = clamp(box.contentRect.height * 0.036, 16, 32);
       overlay.style.setProperty('--jiaohua-caption-font-size', `${size.toFixed(2)}px`);
+      applyVerticalPosition();
     }
 
     function bindResizeTargets() {
       const nextPlayer = findPlayer();
       const nextVideo = findVideo(nextPlayer);
       if (nextPlayer === player && nextVideo === video) {
-        updateFontSize();
+        updateFontAndPosition();
         return;
       }
 
@@ -380,14 +516,14 @@
       video = nextVideo;
 
       if (player) {
-        playerResizeObserver = new win.ResizeObserver(updateFontSize);
+        playerResizeObserver = new win.ResizeObserver(updateFontAndPosition);
         playerResizeObserver.observe(player);
       }
       if (video) {
-        videoResizeObserver = new win.ResizeObserver(updateFontSize);
+        videoResizeObserver = new win.ResizeObserver(updateFontAndPosition);
         videoResizeObserver.observe(video);
       }
-      updateFontSize();
+      updateFontAndPosition();
     }
 
     function measureFactory() {
@@ -402,8 +538,9 @@
     }
 
     function maxLineWidth() {
-      const playerWidth = player?.clientWidth || win.innerWidth || 800;
-      return Math.max(180, Math.min(playerWidth * 0.78, 880));
+      const box = geometry();
+      const width = box?.contentRect.width || player?.clientWidth || win.innerWidth || 800;
+      return Math.max(180, Math.min(width * 0.78, 880));
     }
 
     function nativeSetText(value) {
@@ -436,7 +573,7 @@
       state.pendingSince = 0;
       state.cueSwitched = false;
       setVisible(Boolean(layout.display));
-      updateFontSize();
+      updateFontAndPosition();
     }
 
     function scheduleCommit() {
@@ -463,6 +600,7 @@
         state.committedDisplay = '';
         state.layout = null;
         setVisible(true);
+        updateFontAndPosition();
       }, state.policy.blankGraceMs);
 
       disableTimer = win.setTimeout(() => {
@@ -515,6 +653,91 @@
       }, state.policy.selectionReleaseMs);
     }
 
+    function showHandle() {
+      clearTimer('handle');
+      overlay?.setAttribute(HANDLE_VISIBLE_ATTRIBUTE, 'true');
+    }
+
+    function hideHandleSoon() {
+      clearTimer('handle');
+      if (state.dragging) return;
+      handleHideTimer = win.setTimeout(() => {
+        handleHideTimer = 0;
+        if (!state.dragging) overlay?.removeAttribute(HANDLE_VISIBLE_ATTRIBUTE);
+      }, state.policy.handleHideMs);
+    }
+
+    function startVerticalDrag(event) {
+      if (event.button !== 0 || !overlay || !player || !handleElement) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      showHandle();
+
+      const box = geometry();
+      if (!box) return;
+      state.dragging = true;
+      overlay.setAttribute(DRAGGING_ATTRIBUTE, 'true');
+      const startY = event.clientY;
+      const startRatio = clampBottomRatio(
+        state.manualBottomRatio ?? state.policy.defaultBottomRatio,
+        box.contentRect.height,
+        overlay.offsetHeight,
+      );
+      state.manualBottomRatio = startRatio;
+      applyVerticalPosition();
+
+      try { handleElement.setPointerCapture(event.pointerId); } catch (_) {}
+
+      const move = (moveEvent) => {
+        moveEvent.preventDefault();
+        moveEvent.stopImmediatePropagation();
+        const currentBox = geometry();
+        if (!currentBox) return;
+        state.manualBottomRatio = dragBottomRatio(
+          startRatio,
+          moveEvent.clientY - startY,
+          currentBox.contentRect.height,
+          overlay.offsetHeight,
+        );
+        applyVerticalPosition();
+      };
+
+      const finish = (finishEvent) => {
+        finishEvent?.preventDefault?.();
+        finishEvent?.stopImmediatePropagation?.();
+        state.dragging = false;
+        overlay?.removeAttribute(DRAGGING_ATTRIBUTE);
+        try { handleElement?.releasePointerCapture(event.pointerId); } catch (_) {}
+        handleElement?.removeEventListener('pointermove', move, true);
+        handleElement?.removeEventListener('pointerup', finish, true);
+        handleElement?.removeEventListener('pointercancel', finish, true);
+        hideHandleSoon();
+      };
+
+      handleElement.addEventListener('pointermove', move, true);
+      handleElement.addEventListener('pointerup', finish, true);
+      handleElement.addEventListener('pointercancel', finish, true);
+    }
+
+    function bindInteractions() {
+      interactionAbort?.abort();
+      interactionAbort = new win.AbortController();
+      const options = { signal: interactionAbort.signal };
+
+      handleElement = overlay?.querySelector(HANDLE_SELECTOR) || null;
+      if (handleElement) {
+        handleElement.textContent = '';
+        handleElement.addEventListener('pointerdown', startVerticalDrag, { capture: true, signal: interactionAbort.signal });
+        handleElement.addEventListener('pointerenter', showHandle, options);
+        handleElement.addEventListener('pointerleave', hideHandleSoon, options);
+      }
+      if (textElement) {
+        textElement.addEventListener('pointerenter', showHandle, options);
+        textElement.addEventListener('pointerleave', hideHandleSoon, options);
+      }
+      updateHandlePosition();
+    }
+
     function unbindTextElement() {
       if (!textElement) return;
       try { delete textElement.textContent; } catch (_) {}
@@ -551,15 +774,20 @@
     function bindOverlay(nextOverlay) {
       if (!nextOverlay || nextOverlay === overlay) return;
       overlayObserver?.disconnect();
+      interactionAbort?.abort();
       overlay = nextOverlay;
-      overlay.removeAttribute(MANUAL_ATTRIBUTE);
       bindTextElement(overlay.querySelector('.jiaohua-caption-text'));
       bindResizeTargets();
-      updateFontSize();
+      bindInteractions();
+      updateFontAndPosition();
 
       overlayObserver = new win.MutationObserver(() => {
-        bindTextElement(overlay?.querySelector('.jiaohua-caption-text'));
-        updateFontSize();
+        const nextText = overlay?.querySelector('.jiaohua-caption-text');
+        if (nextText !== textElement) {
+          bindTextElement(nextText);
+          bindInteractions();
+        }
+        updateFontAndPosition();
       });
       overlayObserver.observe(overlay, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
     }
@@ -582,25 +810,21 @@
     doc.addEventListener('mouseup', unlockSelectionSoon, true);
     doc.addEventListener('dragend', unlockSelectionSoon, true);
 
-    doc.addEventListener('pointerdown', (event) => {
-      const target = event.target instanceof win.Element ? event.target : null;
-      if (!target?.closest(HANDLE_SELECTOR)) return;
-      const currentOverlay = doc.getElementById(OVERLAY_ID);
-      if (currentOverlay) currentOverlay.setAttribute(MANUAL_ATTRIBUTE, 'true');
-    }, true);
-
-    win.addEventListener('resize', updateFontSize, { passive: true });
-    doc.addEventListener('fullscreenchange', updateFontSize);
+    win.addEventListener('resize', updateFontAndPosition, { passive: true });
+    win.visualViewport?.addEventListener('resize', updateFontAndPosition, { passive: true });
+    doc.addEventListener('fullscreenchange', updateFontAndPosition);
 
     win.addEventListener('pagehide', () => {
       clearTimer('commit');
       clearTimer('blank');
       clearTimer('disable');
       clearTimer('selection');
+      clearTimer('handle');
       documentObserver?.disconnect();
       overlayObserver?.disconnect();
       playerResizeObserver?.disconnect();
       videoResizeObserver?.disconnect();
+      interactionAbort?.abort();
       unbindTextElement();
       setVisible(false);
       doc.getElementById(STYLE_ID)?.remove();
@@ -620,6 +844,10 @@
     trimDisplayWindow,
     defaultMeasure,
     layoutCaption,
+    computeContainedVideoRect,
+    clampBottomRatio,
+    bottomRatioToPlayerBottom,
+    dragBottomRatio,
     install,
   };
 });
