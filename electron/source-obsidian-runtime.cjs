@@ -24,9 +24,18 @@ const {
   markImportedRecord,
 } = require('./obsidian-clipper.cjs');
 
+const fsp = fs.promises;
+const FAVICON_FOLDER = path.join('AI划词', '_assets', 'favicons');
+const FAVICON_TIMEOUT_MS = 2500;
+const MAX_FAVICON_DOWNLOADS = 3;
+
 let installed = false;
 let latestBrowserPayload = null;
 let latestBrowserPayloadAt = 0;
+let importQueue = Promise.resolve();
+let activeFaviconDownloads = 0;
+const faviconQueue = [];
+const faviconTasks = new Map();
 
 function parseSelectionBody(buffer) {
   try {
@@ -90,10 +99,26 @@ function readStore(app) {
   }
 }
 
+async function readStoreAsync(app) {
+  try {
+    return JSON.parse(await fsp.readFile(storeFile(app), 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
 function writeStore(app, store) {
   const file = storeFile(app);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(store, null, 2), 'utf8');
+}
+
+async function writeStoreAsync(app, store) {
+  const file = storeFile(app);
+  const temporary = `${file}.tmp`;
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(temporary, JSON.stringify(store, null, 2), 'utf8');
+  await fsp.rename(temporary, file);
 }
 
 function routeFromUrl(url) {
@@ -123,8 +148,7 @@ function updateHistoryRecord(app, BrowserWindow, recordId, updater) {
     return next;
   });
   if (!changed) return updatedRecord;
-  const nextStore = { ...store, history };
-  writeStore(app, nextStore);
+  writeStore(app, { ...store, history });
   broadcastHistory(BrowserWindow, history);
   return updatedRecord;
 }
@@ -146,39 +170,81 @@ function extensionFromContentType(contentType, urlValue) {
   return '.png';
 }
 
-async function ensureFavicon(vaultPath, record) {
-  const location = record?.sourceLocation;
-  if (!vaultPath || !location?.faviconUrl || !location?.hostname) return record;
-  if (location.faviconVaultPath) return record;
-  const relativeFolder = path.join('AI划词', '_assets', 'favicons');
-  const folder = path.join(vaultPath, relativeFolder);
-  fs.mkdirSync(folder, { recursive: true });
+async function cachedFaviconPath(vaultPath, location) {
+  if (!vaultPath || !location?.hostname) return '';
+  if (location.faviconVaultPath) return String(location.faviconVaultPath);
+  const folder = path.join(vaultPath, FAVICON_FOLDER);
   const base = cleanHostFileName(location.hostname);
-  const existing = fs.readdirSync(folder).find((name) => name === base || name.startsWith(`${base}.`));
-  if (existing) {
-    return { ...record, sourceLocation: { ...location, faviconVaultPath: `${relativeFolder.replace(/\\/g, '/')}/${existing}` } };
+  try {
+    const entries = await fsp.readdir(folder);
+    const existing = entries.find((name) => name === base || name.startsWith(`${base}.`));
+    return existing ? `${FAVICON_FOLDER.replace(/\\/g, '/')}/${existing}` : '';
+  } catch (_) {
+    return '';
   }
+}
 
+async function recordWithCachedFavicon(vaultPath, record) {
+  const location = record?.sourceLocation;
+  if (!location) return record;
+  const cached = await cachedFaviconPath(vaultPath, location);
+  return cached
+    ? { ...record, sourceLocation: { ...location, faviconVaultPath: cached } }
+    : record;
+}
+
+async function downloadFavicon(vaultPath, location) {
+  if (!vaultPath || !location?.faviconUrl || !location?.hostname) return '';
+  const cached = await cachedFaviconPath(vaultPath, location);
+  if (cached) return cached;
+
+  const folder = path.join(vaultPath, FAVICON_FOLDER);
+  const base = cleanHostFileName(location.hostname);
   try {
     const response = await fetch(location.faviconUrl, {
       redirect: 'follow',
-      signal: AbortSignal.timeout(4500),
+      signal: AbortSignal.timeout(FAVICON_TIMEOUT_MS),
       headers: { 'User-Agent': 'JiaoHua-AI/1.0' },
     });
-    if (!response.ok) return record;
+    if (!response.ok) return '';
     const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-    if (!/^image\/(png|jpe?g|webp|x-icon|vnd\.microsoft\.icon|ico)(?:;|$)/.test(contentType)) return record;
+    if (!/^image\/(png|jpe?g|webp|x-icon|vnd\.microsoft\.icon|ico)(?:;|$)/.test(contentType)) return '';
     const contentLength = Number(response.headers.get('content-length') || 0);
-    if (contentLength > 256 * 1024) return record;
+    if (contentLength > 256 * 1024) return '';
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length || buffer.length > 256 * 1024) return record;
+    if (!buffer.length || buffer.length > 256 * 1024) return '';
     const ext = extensionFromContentType(contentType, location.faviconUrl);
     const name = `${base}${ext}`;
-    fs.writeFileSync(path.join(folder, name), buffer);
-    return { ...record, sourceLocation: { ...location, faviconVaultPath: `${relativeFolder.replace(/\\/g, '/')}/${name}` } };
+    await fsp.mkdir(folder, { recursive: true });
+    await fsp.writeFile(path.join(folder, name), buffer);
+    return `${FAVICON_FOLDER.replace(/\\/g, '/')}/${name}`;
   } catch (_) {
-    return record;
+    return '';
   }
+}
+
+function pumpFaviconQueue() {
+  while (activeFaviconDownloads < MAX_FAVICON_DOWNLOADS && faviconQueue.length > 0) {
+    const task = faviconQueue.shift();
+    activeFaviconDownloads += 1;
+    Promise.resolve()
+      .then(task.run)
+      .catch(() => '')
+      .finally(() => {
+        activeFaviconDownloads -= 1;
+        faviconTasks.delete(task.key);
+        pumpFaviconQueue();
+      });
+  }
+}
+
+function scheduleFaviconDownload(vaultPath, location) {
+  if (!vaultPath || !location?.faviconUrl || !location?.hostname || location.faviconVaultPath) return;
+  const key = `${path.resolve(vaultPath)}|${String(location.hostname).toLowerCase()}`;
+  if (faviconTasks.has(key)) return;
+  faviconTasks.set(key, true);
+  faviconQueue.push({ key, run: () => downloadFavicon(vaultPath, location) });
+  pumpFaviconQueue();
 }
 
 function findRecord(store, recordInput) {
@@ -207,12 +273,28 @@ function readImportIndex(vaultPath) {
   }
 }
 
+async function readImportIndexAsync(vaultPath) {
+  try {
+    return normalizeImportIndex(JSON.parse(await fsp.readFile(importIndexFile(vaultPath), 'utf8')));
+  } catch (_) {
+    return normalizeImportIndex(null);
+  }
+}
+
 function writeImportIndex(vaultPath, index) {
   const file = importIndexFile(vaultPath);
   const temporary = `${file}.tmp`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(temporary, JSON.stringify(normalizeImportIndex(index), null, 2), 'utf8');
   fs.renameSync(temporary, file);
+}
+
+async function writeImportIndexAsync(vaultPath, index) {
+  const file = importIndexFile(vaultPath);
+  const temporary = `${file}.tmp`;
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(temporary, JSON.stringify(normalizeImportIndex(index), null, 2), 'utf8');
+  await fsp.rename(temporary, file);
 }
 
 function migrateTargetMarkers(vaultPath, target, relativePath, existing, index) {
@@ -225,50 +307,183 @@ function migrateTargetMarkers(vaultPath, target, relativePath, existing, index) 
   return { existing: cleaned, index: nextIndex, migratedIds: ids };
 }
 
-async function saveClipToObsidian(app, BrowserWindow, payload) {
+function enqueueImport(task) {
+  const run = importQueue.then(task, task);
+  importQueue = run.catch(() => {});
+  return run;
+}
+
+function duplicateResult(recordId) {
+  return {
+    recordId,
+    ok: false,
+    duplicate: true,
+    error: '该记录已经导入 Obsidian。',
+  };
+}
+
+async function loadTarget(target) {
+  try { return await fsp.readFile(target, 'utf8'); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return '';
+    throw error;
+  }
+}
+
+async function writeTargetGroup(group, existing) {
+  const blocks = group.items.map((item) => item.markdown).filter(Boolean);
+  if (!blocks.length) return;
+  const joined = blocks.join('\n\n');
+  await fsp.mkdir(path.dirname(group.target), { recursive: true });
+
+  if (group.template.saveBehavior === 'append_to_existing_note_top') {
+    const separator = existing.trim() ? '\n\n' : '';
+    await fsp.writeFile(group.target, `${joined}${separator}${existing}`, 'utf8');
+    return;
+  }
+
+  const separator = existing.trim() ? '\n\n' : '';
+  await fsp.appendFile(group.target, `${separator}${joined}\n`, 'utf8');
+}
+
+async function importRecords(app, BrowserWindow, payload) {
+  const startedAt = Date.now();
   const request = payload || {};
-  const store = readStore(app);
+  const requestedIds = [...new Set(Array.isArray(request.recordIds)
+    ? request.recordIds.map((id) => String(id))
+    : [String(request.recordId || request.record?.id || '')].filter(Boolean))];
+  if (!requestedIds.length) throw new Error('没有选择历史记录。');
+
+  const store = await readStoreAsync(app);
   if (!store) throw new Error('无法读取本地历史数据。');
-  let record = findRecord(store, request.record || request.recordId);
-  if (!record) throw new Error('没有找到这条历史记录。');
-  record = enrichRecordFromLatestSource(record);
   const template = (store.obsidianTemplates || []).find((item) => item.id === request.templateId);
   if (!template) throw new Error('没有找到这个模板。');
   const vaultPath = String(store.settings?.obsidian?.vaultPath || '').trim();
   if (!vaultPath) throw new Error('还没有设置 Obsidian vault 路径。');
 
-  const nextRecord = await ensureFavicon(vaultPath, record);
-  const context = buildClipperContext(nextRecord);
-  const { target, relativePath } = resolveTargetPath(vaultPath, template, context);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
+  let index = await readImportIndexAsync(vaultPath);
+  const resultsById = new Map();
+  const candidates = [];
 
-  const rawExisting = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
-  const migrated = migrateTargetMarkers(vaultPath, target, relativePath, rawExisting, readImportIndex(vaultPath));
-  const existing = migrated.existing;
-  const index = migrated.index;
+  for (const recordId of requestedIds) {
+    let record = findRecord(store, request.record && String(request.record.id) === recordId ? request.record : recordId);
+    if (!record) {
+      resultsById.set(recordId, { recordId, ok: false, duplicate: false, error: '没有找到这条历史记录。' });
+      continue;
+    }
+    record = enrichRecordFromLatestSource(record);
+    if (record.savedToObsidian || hasImportedRecord(index, record.id)) {
+      resultsById.set(recordId, duplicateResult(recordId));
+      continue;
+    }
+    candidates.push(await recordWithCachedFavicon(vaultPath, record));
+  }
 
-  if (nextRecord.savedToObsidian || hasImportedRecord(index, nextRecord.id)) {
-    const error = new Error('该记录已经导入 Obsidian。');
-    error.code = 'DUPLICATE_RECORD';
+  const groups = new Map();
+  for (const record of candidates) {
+    const context = buildClipperContext(record);
+    const { target, relativePath } = resolveTargetPath(vaultPath, template, context);
+    const key = path.resolve(target);
+    if (!groups.has(key)) groups.set(key, { target: key, relativePath, template, items: [] });
+    groups.get(key).items.push({ record, markdown: renderClipperTemplate(template, record) });
+  }
+
+  for (const group of groups.values()) {
+    try {
+      const rawExisting = await loadTarget(group.target);
+      const markerIds = extractRecordIds(rawExisting);
+      let existing = stripRecordMarkers(rawExisting);
+      for (const id of markerIds) index = markImportedRecord(index, id, group.relativePath);
+      if (existing !== rawExisting) {
+        await fsp.mkdir(path.dirname(group.target), { recursive: true });
+        await fsp.writeFile(group.target, existing, 'utf8');
+      }
+
+      const writable = [];
+      for (const item of group.items) {
+        if (hasImportedRecord(index, item.record.id)) {
+          resultsById.set(String(item.record.id), duplicateResult(String(item.record.id)));
+        } else {
+          writable.push(item);
+        }
+      }
+      group.items = writable;
+      if (!group.items.length) continue;
+
+      await writeTargetGroup(group, existing);
+      for (const item of group.items) {
+        index = markImportedRecord(index, item.record.id, group.relativePath);
+        resultsById.set(String(item.record.id), {
+          recordId: String(item.record.id),
+          ok: true,
+          path: group.target,
+          relativePath: group.relativePath,
+        });
+        scheduleFaviconDownload(vaultPath, item.record.sourceLocation);
+      }
+    } catch (error) {
+      for (const item of group.items) {
+        resultsById.set(String(item.record.id), {
+          recordId: String(item.record.id),
+          ok: false,
+          duplicate: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  const successfulIds = new Set([...resultsById.values()].filter((item) => item.ok).map((item) => String(item.recordId)));
+  let nextStore = store;
+  if (successfulIds.size > 0) {
+    const pathsById = new Map([...resultsById.values()].filter((item) => item.ok).map((item) => [String(item.recordId), item.path]));
+    const history = (store.history || []).map((record) => successfulIds.has(String(record.id))
+      ? { ...record, savedToObsidian: true, obsidianPath: pathsById.get(String(record.id)) }
+      : record);
+    nextStore = { ...store, history };
+    await Promise.all([
+      writeImportIndexAsync(vaultPath, index),
+      writeStoreAsync(app, nextStore),
+    ]);
+    broadcastHistory(BrowserWindow, history);
+  } else if (extractRecordIds('').length === 0 && JSON.stringify(index) !== JSON.stringify(await readImportIndexAsync(vaultPath))) {
+    await writeImportIndexAsync(vaultPath, index);
+  }
+
+  const results = requestedIds.map((id) => resultsById.get(id) || ({ recordId: id, ok: false, duplicate: false, error: '导入未完成。' }));
+  const durationMs = Date.now() - startedAt;
+  console.log(`[SourceClipper] imported ${results.filter((item) => item.ok).length}/${requestedIds.length} record(s) in ${durationMs}ms across ${groups.size} note(s)`);
+  return {
+    ok: results.every((item) => item.ok || item.duplicate),
+    successCount: results.filter((item) => item.ok).length,
+    duplicateCount: results.filter((item) => item.duplicate).length,
+    failureCount: results.filter((item) => !item.ok && !item.duplicate).length,
+    durationMs,
+    results,
+  };
+}
+
+async function saveClipToObsidian(app, BrowserWindow, payload) {
+  const batch = await enqueueImport(() => importRecords(app, BrowserWindow, {
+    ...payload,
+    recordId: payload?.recordId || payload?.record?.id,
+  }));
+  const item = batch.results[0];
+  if (!item?.ok) {
+    const error = new Error(item?.error || '导入失败。');
+    if (item?.duplicate) error.code = 'DUPLICATE_RECORD';
     throw error;
   }
-
-  const markdown = renderClipperTemplate(template, nextRecord);
-  const separator = existing.trim() ? '\n\n' : '';
-  if (template.saveBehavior === 'append_to_existing_note_top') {
-    fs.writeFileSync(target, `${markdown}${separator}${existing}`, 'utf8');
-  } else {
-    fs.writeFileSync(target, `${existing}${separator}${markdown}\n`, 'utf8');
-  }
-  writeImportIndex(vaultPath, markImportedRecord(index, nextRecord.id, relativePath));
-
-  const persistedRecord = updateHistoryRecord(app, BrowserWindow, nextRecord.id, (item) => ({
-    ...item,
-    sourceLocation: nextRecord.sourceLocation || item.sourceLocation,
-    savedToObsidian: true,
-    obsidianPath: target,
-  }));
-  return { ok: true, path: target, relativePath, templateName: template.name, record: persistedRecord || nextRecord };
+  const store = await readStoreAsync(app);
+  const record = store?.history?.find((entry) => String(entry.id) === String(item.recordId));
+  return {
+    ok: true,
+    path: item.path,
+    relativePath: item.relativePath,
+    templateName: (store?.obsidianTemplates || []).find((entry) => entry.id === payload?.templateId)?.name || '',
+    record,
+    durationMs: batch.durationMs,
+  };
 }
 
 function previewClip(app, payload) {
@@ -290,30 +505,7 @@ function previewClip(app, payload) {
 }
 
 async function saveManyClips(app, BrowserWindow, payload) {
-  const request = payload || {};
-  const ids = [...new Set(Array.isArray(request.recordIds) ? request.recordIds : [])];
-  if (!ids.length) throw new Error('没有选择历史记录。');
-  const results = [];
-  for (const recordId of ids) {
-    try {
-      const result = await saveClipToObsidian(app, BrowserWindow, { templateId: request.templateId, recordId });
-      results.push({ recordId, ok: true, path: result.path });
-    } catch (error) {
-      results.push({
-        recordId,
-        ok: false,
-        duplicate: error?.code === 'DUPLICATE_RECORD',
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return {
-    ok: results.every((item) => item.ok || item.duplicate),
-    successCount: results.filter((item) => item.ok).length,
-    duplicateCount: results.filter((item) => item.duplicate).length,
-    failureCount: results.filter((item) => !item.ok && !item.duplicate).length,
-    results,
-  };
+  return enqueueImport(() => importRecords(app, BrowserWindow, payload));
 }
 
 function patchResultWithSource(app, BrowserWindow, result, snapshot) {
@@ -392,9 +584,7 @@ function install() {
       return registerHandler(channel, async (...args) => {
         const templateId = args?.[1];
         const result = await listener(...args);
-        if (String(templateId || '') === CLIPPER_TEMPLATE_ID) {
-          updateBundledTemplateState(app, markClipperTemplateDismissed);
-        }
+        if (String(templateId || '') === CLIPPER_TEMPLATE_ID) updateBundledTemplateState(app, markClipperTemplateDismissed);
         return result;
       });
     }
@@ -403,28 +593,18 @@ function install() {
       return registerHandler(channel, async (...args) => {
         const template = args?.[1];
         const result = await listener(...args);
-        if (String(template?.id || '') === CLIPPER_TEMPLATE_ID) {
-          updateBundledTemplateState(app, markClipperTemplateAvailable);
-        }
+        if (String(template?.id || '') === CLIPPER_TEMPLATE_ID) updateBundledTemplateState(app, markClipperTemplateAvailable);
         return result;
       });
     }
 
-    if (channel === 'obsidian:template:preview') {
-      return registerHandler(channel, (_event, payload) => previewClip(app, payload));
-    }
-    if (channel === 'obsidian:note:save') {
-      return registerHandler(channel, (_event, payload) => saveClipToObsidian(app, BrowserWindow, payload));
-    }
-    if (channel === 'obsidian:notes:save-many') {
-      return registerHandler(channel, (_event, payload) => saveManyClips(app, BrowserWindow, payload));
-    }
-
+    if (channel === 'obsidian:template:preview') return registerHandler(channel, (_event, payload) => previewClip(app, payload));
+    if (channel === 'obsidian:note:save') return registerHandler(channel, (_event, payload) => saveClipToObsidian(app, BrowserWindow, payload));
+    if (channel === 'obsidian:notes:save-many') return registerHandler(channel, (_event, payload) => saveManyClips(app, BrowserWindow, payload));
     return registerHandler(channel, listener);
   };
 
   app.whenReady().then(() => {
-    // The old jiaohua:// route is no longer used by Obsidian notes.
     try { app.removeAsDefaultProtocolClient('jiaohua'); } catch (_) {}
   });
   console.log('[SourceClipper] installed');
@@ -438,5 +618,8 @@ module.exports = {
   readImportIndex,
   writeImportIndex,
   migrateTargetMarkers,
+  cachedFaviconPath,
+  recordWithCachedFavicon,
+  importRecords,
   patchResultWithSource,
 };
