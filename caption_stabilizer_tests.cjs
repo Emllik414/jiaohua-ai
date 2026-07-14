@@ -1,5 +1,22 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+function loadCaptionStabilizerApi() {
+  const filename = path.join(__dirname, 'browser-extension', 'caption-text-stabilizer.js');
+  const code = fs.readFileSync(filename, 'utf8');
+  const sandbox = {
+    module: { exports: {} },
+    exports: {},
+    console,
+    setTimeout,
+    clearTimeout,
+  };
+  vm.runInNewContext(code, sandbox, { filename });
+  return sandbox.module.exports;
+}
 
 const {
   normalizeText,
@@ -8,7 +25,7 @@ const {
   formatCaption,
   createState,
   nextDelay,
-} = require('./browser-extension/caption-text-stabilizer.js');
+} = loadCaptionStabilizerApi();
 
 test('normalizes whitespace without changing punctuation', () => {
   assert.equal(normalizeText('  I   think\nwe should leave.  '), 'I think we should leave.');

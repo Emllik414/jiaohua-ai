@@ -1,5 +1,5 @@
 // background.js - MV3 service worker with Edge/Chrome recovery
-const VERSION = '1.4.1';
+const VERSION = '1.5.0';
 const PING_TIMEOUT_MS = 800;
 const ALARM_NAME = 'aisel-scan-tabs';
 const ALARM_PERIOD_MINUTES = 1;
@@ -65,14 +65,12 @@ async function pingTab(tabId) {
 
 async function injectTab(tabId) {
   try {
-    // Inject files in the same order as manifest.json. The unified stability
-    // controller runs after content.js so it can take ownership of the created
-    // caption node without patching Node.prototype globally.
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       files: [
         'native-cc-segmentation.js',
         'subtitle-placement-anchor.js',
+        'source-location-capture.js',
         'content.js',
         'caption-stability-v2.js',
       ],
@@ -97,8 +95,6 @@ async function ensureTabAlive(tabId, url) {
   if (await pingTab(tabId)) return true;
   if (!(await injectTab(tabId))) return false;
 
-  // executeScript resolves after injection; ping once more to verify the
-  // content script really started instead of assuming success.
   const alive = await pingTab(tabId);
   if (!alive) {
     console.warn('[AISel-BG] content script did not answer after injection', tabId);
@@ -179,6 +175,5 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   aliveTabs.delete(tabId);
 });
 
-// Also run once whenever Edge/Chrome wakes this service worker after reload.
 initialize('worker-wakeup').catch(() => {});
 console.log(`[AISel-BG] ready v${VERSION}`);

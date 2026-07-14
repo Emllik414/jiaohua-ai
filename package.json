@@ -4,7 +4,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "main": "electron/pronunciation-bootstrap.cjs",
+  "main": "electron/source-clipper-bootstrap.cjs",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:vite\" \"npm:dev:electron\"",
     "dev:vite": "vite --host 127.0.0.1",

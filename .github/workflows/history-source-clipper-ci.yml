@@ -1,0 +1,88 @@
+name: History Source Clipper CI
+
+on:
+  push:
+    branches:
+      - feature/history-source-obsidian-clipper
+  pull_request:
+    branches:
+      - feature/caption-drag-pronunciation-live
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax checks
+        run: |
+          node --check electron/source-location.cjs
+          node --check electron/obsidian-clipper.cjs
+          node --check electron/source-restore-bridge.cjs
+          node --check electron/source-obsidian-runtime.cjs
+          node --check electron/source-clipper-bootstrap.cjs
+          node --check electron/clipper-initial-data-runtime.cjs
+          node --check electron/clipper-template-bootstrap.cjs
+          node --check electron/history-export.cjs
+          node --check browser-extension/source-location-capture.js
+          node --check browser-extension/background.js
+
+      - name: Source, Obsidian, and export tests
+        run: node --test source_location_tests.cjs obsidian_clipper_tests.cjs source_restore_tests.cjs source_runtime_tests.cjs history_export_source_tests.cjs
+
+      - name: Build
+        run: npm run build
+
+      - name: Pronunciation history regression
+        run: node --test pronunciation_history_tests.cjs
+
+      - name: Pronunciation live regression
+        run: node --test pronunciation_live_tests.cjs
+
+      - name: Skill shortcut regression
+        run: node --test skill_shortcut_tests.cjs
+
+  caption-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run caption stability regression
+        id: caption
+        continue-on-error: true
+        shell: bash
+        run: node --test caption_stability_v2_tests.cjs > caption-regression.log 2>&1
+
+      - name: Upload caption regression log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: caption-regression-log
+          path: caption-regression.log
+          if-no-files-found: error
+
+      - name: Preserve caption regression result
+        if: steps.caption.outcome == 'failure'
+        run: exit 1
