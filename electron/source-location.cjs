@@ -166,7 +166,6 @@ function attachRecordLinks(record, sourceLocation) {
     sourceLocation: {
       ...location,
       openUrl: buildOpenUrl(location),
-      deepLink: `jiaohua://source/${encodeURIComponent(String(record.id))}`,
       siteName: sourceSiteName(location),
       icon: sourceIcon(location),
       videoTime: formatVideoTime(location?.video?.currentTime),
