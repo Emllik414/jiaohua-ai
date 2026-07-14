@@ -6,6 +6,15 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
+  // Obsidian source links now use direct http/https URLs. Remove the obsolete
+  // custom protocol association and prevent older runtime code from restoring it.
+  try { app.removeAsDefaultProtocolClient('jiaohua'); } catch (_) {}
+  const originalSetAsDefaultProtocolClient = app.setAsDefaultProtocolClient.bind(app);
+  app.setAsDefaultProtocolClient = function setProtocolClient(protocol, ...args) {
+    if (String(protocol || '').toLowerCase() === 'jiaohua') return false;
+    return originalSetAsDefaultProtocolClient(protocol, ...args);
+  };
+
   try {
     require('./source-restore-bridge.cjs').install();
   } catch (error) {
