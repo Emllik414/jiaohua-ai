@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - feature/history-source-obsidian-clipper
+      - feature/obsidian-import-performance
   pull_request:
     branches:
       - feature/caption-drag-pronunciation-live
+      - feature/history-source-obsidian-clipper
   workflow_dispatch:
 
 permissions:
@@ -33,6 +35,8 @@ jobs:
         run: |
           node --check electron/source-location.cjs
           node --check electron/obsidian-clipper.cjs
+          node --check electron/obsidian-import-engine.cjs
+          node --check electron/obsidian-import-performance-runtime.cjs
           node --check electron/source-restore-bridge.cjs
           node --check electron/source-obsidian-runtime.cjs
           node --check electron/source-clipper-bootstrap.cjs
@@ -41,9 +45,10 @@ jobs:
           node --check electron/history-export.cjs
           node --check browser-extension/source-location-capture.js
           node --check browser-extension/background.js
+          node --check obsidian_import_performance_tests.cjs
 
-      - name: Source, Obsidian, and export tests
-        run: node --test source_location_tests.cjs obsidian_clipper_tests.cjs source_restore_tests.cjs source_runtime_tests.cjs history_export_source_tests.cjs
+      - name: Source, Obsidian, performance, and export tests
+        run: node --test source_location_tests.cjs obsidian_clipper_tests.cjs obsidian_import_performance_tests.cjs source_restore_tests.cjs source_runtime_tests.cjs history_export_source_tests.cjs
 
       - name: Build
         run: npm run build

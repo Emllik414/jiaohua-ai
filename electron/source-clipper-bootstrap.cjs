@@ -1,11 +1,17 @@
 'use strict';
 
-const { app } = require('electron');
+const { app, ipcMain } = require('electron');
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
+  // Preserve the real IPC registrar before feature runtimes wrap ipcMain.handle.
+  // The performance runtime uses it after application handlers are registered.
+  if (!ipcMain.__jiaohuaRawHandle) {
+    ipcMain.__jiaohuaRawHandle = ipcMain.handle.bind(ipcMain);
+  }
+
   // Obsidian source links now use direct http/https URLs. Remove the obsolete
   // custom protocol association and prevent older runtime code from restoring it.
   try { app.removeAsDefaultProtocolClient('jiaohua'); } catch (_) {}
@@ -23,6 +29,7 @@ if (!hasSingleInstanceLock) {
 
   try {
     require('./source-obsidian-runtime.cjs').install();
+    require('./obsidian-import-performance-runtime.cjs').install();
     require('./clipper-initial-data-runtime.cjs').install();
     require('./clipper-template-bootstrap.cjs').install();
   } catch (error) {
